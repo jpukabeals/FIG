@@ -1,0 +1,3554 @@
+---
+title: "FIG Data Analysis"
+author: "Jesse Puka-Beals"
+date: '`r format(Sys.Date(), "%m %d %Y")`'
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+    chunk_output_type: console
+  chunk_output_type: console
+---
+
+# Overview
+
+This markdown file has everything you need for the forage timing "FIG" experiment. Data import, data analysis, figure generation, table generation and commentary along the way. 
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE, 
+                      warning = FALSE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, nlme, lsmeans, lme4, multcomp,multcompView,
+               googlesheets4, googledrive, lubridate, reshape2,ggpubr,
+               plotrix)
+
+options(scipen=999) #reduce scientific notation 
+options(digits=4)   # only print 4 sig figs
+# options(device = "windows")
+
+# Remember to add chunk output in console for figure generation
+```
+
+```{r import+tidy OLD, include=FALSE, cache=TRUE}
+
+dat <- read.csv("FIG_data - Sheet1.csv")
+weather<- read.csv("FIG_weather - Sheet1.csv")
+
+# driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
+#  
+# dat<-read_sheet(driveurl,gs4_deauth())
+# 
+# weatherurl<-"https://docs.google.com/spreadsheets/d/1I-kHBXThb0VSwOgRF6ZwiyOtC9-BwCtsKVl7_Z7-XXs/edit#gid=0"
+# weather<-read_sheet(weatherurl, gs4_deauth())
+# 
+# rm(driveurl, weatherurl)
+
+library(dplyr)
+dat<-dat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+dat$timing.1cut <- factor(dat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+dat$follow.cut <- factor(dat$follow.cut, levels = c("none", "september", "october"))
+dat$site <- factor(dat$site, levels = c("I2", "R70", "R100"))
+dat$treatment <- factor(dat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+#for total yield comparisons
+dat$yield.total.old <- rowSums(dat[,c("yield.1cut","yield.2cut","yield.3cut")], na.rm=T)
+# ^above method inaccurately calculated yield totals by including rows with NAs, all those rows must be dropped!
+
+oct <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,yield.1cut,yield.2cut,yield.3cut) %>%
+  drop_na() %>%
+  pull(id)
+
+sep <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,yield.1cut,yield.2cut) %>%
+  drop_na() %>%
+  pull(id)
+
+none <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,yield.1cut) %>%
+  drop_na() %>%
+  pull(id)
+
+goodid <- c(oct,sep,none)
+
+datyt <- dat %>%
+  filter(dat$id %in% goodid) %>%
+  rowwise() %>%
+  replace_na(list(yield.1cut=0,yield.2cut=0,yield.3cut=0)) %>%
+  transmute(id=id,
+           yield.total=sum(c(yield.1cut,yield.2cut,yield.3cut)))
+
+dat <- dplyr::left_join(dat,datyt,by="id")
+rm(none,oct,sep,datyt)
+# This method has computed a yield.total ONLY for rows without missing data
+sum(!is.na(dat$yield.total.old)) - sum(!is.na(dat$yield.total))
+# using rowsums allowed 93 datapoints to be included in yield.total that shouldn't have been
+
+#for forage quality comparisons 
+#First cut
+DM<-dat$dry.matter.1cut
+CP<-dat$protein.1cut
+NDF<-dat$NDF.1cut
+NDFD<-dat$NDFD48.1cut
+ADF<-dat$ADF.1cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.1cut<-DMI*TDN/1.23
+dat$RFV.1cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+# How are NAs handled?
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v1 <- dat %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.1cut,protein.1cut) %>%
+#   arrange(dry.matter.1cut);view(v1)
+# rm(v1)
+# ^ all NAs are from grain cuts which get removed anyways, so not concerned since it's not part of working dataset
+
+
+#Second cut
+DM<-dat$dry.matter.2cut
+CP<-dat$protein.2cut
+NDF<-dat$NDF.2cut
+NDFD<-dat$NDFD48.2cut
+ADF<-dat$ADF.2cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.2cut<-DMI*TDN/1.23
+dat$RFV.2cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v2 <- dat3 %>%
+#   filter(follow.cut!="none") %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.2cut,protein.2cut) %>%
+#   arrange(dry.matter.2cut);view(v2)
+# # ^ id=179 has missing data
+# rm(v2)
+
+dat %>%
+  filter(id==179)
+# ^ but that missing data does not results in an NA for that row for the RFQ calculation, so no issue in working dataset
+
+#Third cut
+DM<-dat$dry.matter.3cut
+CP<-dat$protein.3cut
+NDF<-dat$NDF.3cut
+NDFD<-dat$NDFD48.3cut
+ADF<-dat$ADF.3cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.3cut<-DMI*TDN/1.23
+dat$RFV.3cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+
+#weighting the RFQ and RFV by their proportion of the final total forage for a plot
+dat$RFQ.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFQ.1cut 
+dat$RFQ.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFQ.2cut 
+dat$RFQ.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFQ.3cut 
+dat$RFQ.total.old <- rowSums(dat[,c("RFQ.1cut.wt","RFQ.2cut.wt","RFQ.3cut.wt")], na.rm=T)
+# the computed stats like RFQ and RFV and yield.3cut are fine because they preserve NA
+# problem is with rowSums simply skipping NAs rather than dropping the whole row if there's a missing datapoint
+
+sum(is.na(dat$RFQ.1cut.wt))
+sum(is.na(dat$RFQ.2cut.wt))
+sum(is.na(dat$RFQ.3cut.wt))
+
+octq <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+sepq <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+noneq <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,RFQ.1cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidq <- c(octq,sepq,noneq)
+
+datqt <- dat %>%
+  filter(dat$id %in% goodidq) %>%
+  rowwise() %>%
+  replace_na(list(RFQ.1cut.wt=0,RFQ.2cut.wt=0,RFQ.3cut.wt=0)) %>%
+  transmute(id=id,
+           RFQ.total=sum(c(RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datqt,by="id")
+rm(noneq,octq,sepq,datqt)
+# RFQ.total values that equaled zero are due to observations where forage quality data existed but yield data did not, resulting in an unknown weighted forage quality response, so it's recorded as NA in the dataset
+
+dat$RFV.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFV.1cut 
+dat$RFV.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFV.2cut 
+dat$RFV.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFV.3cut
+dat$RFV.total.old <- rowSums(dat[,c("RFV.1cut.wt","RFV.2cut.wt","RFV.3cut.wt")], na.rm=T)
+
+
+sum(is.na(dat$RFV.1cut.wt))
+sum(is.na(dat$RFV.2cut.wt))
+sum(is.na(dat$RFV.3cut.wt))
+# RFV NAs are identical to RFQ NAs, but to reduce liklihood of errors we'll reuse the same code but for RFV
+
+octv <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+sepv <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+nonev <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,RFV.1cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidv <- c(octv,sepv,nonev)
+
+datv <- dat %>%
+  filter(dat$id %in% goodidv) %>%
+  rowwise() %>%
+  replace_na(list(RFV.1cut.wt=0,RFV.2cut.wt=0,RFV.3cut.wt=0)) %>%
+  transmute(id=id,
+           RFV.total=sum(c(RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datv,by="id")
+rm(octv,sepv,nonev,datv)
+
+
+#incorporating $$$ using Hunter et al.
+#Value of the hay in $ per kg
+dat$value.1cut<-34+1.02*dat$RFV.1cut
+dat$value.2cut<-34+1.02*dat$RFV.2cut
+dat$value.3cut<-34+1.02*dat$RFV.3cut
+
+#Economic net economic return in $ per ha
+#subtracts cost of harvest ($143.06 per ha)
+dat$return.1cut<-dat$value.1cut*dat$yield.1cut*0.001-143.06
+dat$return.2cut<-dat$value.2cut*dat$yield.2cut*0.001-143.06
+dat$return.3cut<-dat$value.3cut*dat$yield.3cut*0.001-143.06
+dat$return.total.old<-rowSums(dat[,c("return.1cut","return.2cut","return.3cut")], na.rm=T)
+
+octr <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,return.1cut,return.2cut,return.3cut) %>%
+  drop_na() %>%
+  pull(id)
+
+sepr <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,return.1cut,return.2cut) %>%
+  drop_na() %>%
+  pull(id)
+
+noner <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,return.1cut) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidr <- c(octr,sepr,noner)
+
+datr <- dat %>%
+  filter(dat$id %in% goodidr) %>%
+  rowwise() %>%
+  replace_na(list(return.1cut=0,return.2cut=0,return.3cut=0)) %>%
+  transmute(id=id,
+           return.total=sum(c(return.1cut,return.2cut,return.3cut))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datr,by="id")
+rm(octr,sepr,noner,datr)
+# ^ this removed multiple ID's where a return.total was incorrectly calculated from a plot that had missing data at one of the cuts
+
+rm(goodid,goodidq,goodidr,goodidv)
+rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
+#^these goodid vectors we just removed only are used to calculate correct rowsums and have nothing to do with outliers
+
+weather1 <- weather %>%
+  mutate_at("year", as.factor) %>%
+  mutate(year = recode_factor(year,
+                      `30` = "30 year average")) %>%
+  mutate(date=as.POSIXct(.$date, 
+           format="%m/%d/%Y"))
+```
+
+```{r import+tidy NEW, include=FALSE, cache=TRUE}
+
+tdat <- read.csv("FIG_data_modified - final.csv")
+
+# driveurl<-"https://docs.google.com/spreadsheets/d/1sRbJgHVK8YPWsqQXDi8jhn5P1qeqs1bfm0vvR4k-wC8/edit#gid=2030086613"
+# 
+# tdat<-read_sheet(driveurl,gs4_deauth())
+
+library(dplyr)
+tdat<-tdat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
+tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
+tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+# Forage quality
+
+DM<-tdat$dry.matter
+CP<-tdat$protein
+NDF<-tdat$NDF
+NDFD<-tdat$NDFD48
+ADF<-tdat$ADF
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+tdat$RFQ<-DMI*TDN/1.23
+tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#there are now 3 replicates of a single id
+
+#outlier elimination may still required.
+
+#we will at least eliminate I2
+
+tdat <- tdat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+
+rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
+
+
+```
+
+## Missing and problematic data
+
+*missing data*\
+The data for both follow-up cuts of at the R70 site in 2018 are missing
+from the dataset\
+The data from some plots where the spring harvest was at the grain stage
+is missing from the dataset
+
+*problematic data*\
+The IWG at the I2 site was 6 years old and did not grow back after the
+first spring harvest. Of the data that was collected for the spring
+harvest in 2017 (environment=I2.2017), the data had a negative
+relationship between accumulated GDD and yield, unlike all other
+environments. Considering the I2.2017 IWG did not grow back after the
+spring harvest and the negative relationship between GDD and yield in
+2017, its very likely the old age of this site imposed a large random
+effect on the response variables of interest in this experiment. Since
+the other two sites did not have such an old kernza stand, we decided
+that including the I2 site in our pooled analysis would likely reduce
+our ability to detect the effects of our treatments on the responses
+variables of interest in this experiment, and that the inclusion of a
+dataset from a 6 year old kernza field would not be meaningful to our
+research questions. As a result, all data from the I2 site was removed
+from the dataset we analyzed to answer our research questions.
+
+```{r working datasets, include=FALSE, cache=TRUE}
+ 
+dat1 <- dat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+#for response variables ending in .1cut
+
+dat3 <- dat %>%
+  filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain") 
+# for response variables ending in .2cut or .3cut
+
+# The dat1 and dat3 datasets may still contain an occasional missing value depending on the response variable being examined (see below example with yield), but those missing values will be ignored as NAs during analysis and graphing. For summarise funciton, we can use na.omit() to handle NA's
+
+# example of dat3 with a missing yield observation
+dat3yield <- dat %>%
+  filter(dat$id %in% goodid) %>%
+  filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain")
+
+overlap <- dplyr::left_join(dat3,dat3yield,by="id")
+
+overlap %>%
+  dplyr::select(id,env.x,env.y,yield.total.x,yield.total.y) %>%
+  arrange(yield.total.y)
+# ^ id 164 has missing data for a yield cut and should therefore be removed for yield.total
+
+dat3 %>%
+  filter(id==164) %>%
+  dplyr::select(id,follow.cut,yield.1cut,yield.2cut,yield.3cut,yield.total)
+# if comparing among yield.2cut values, the dat3 dataset still has a missing value, but this is not a problem for the analysis, it's just an example of how our working datasets still may contain missing observations 
+
+rm(dat3yield,overlap)
+
+```
+
+## outliers
+
+Outlier identification was subjective, using boxplots to identify
+outliers within environments and then deciding whether the outlier value
+was reasonable.
+
+In general, for high value outliers, if the distance between outlier and
+the maximum was greater than the distance between the maximum and the
+upper quartile, it was considered an unreasonable outlier and subject to
+removal from the dataset. Similarly for low value outliers, if the
+distance between the outlier and the minimum was greater than the
+distance between the minimum and the lower quartile, it was considered
+an unreasonable outlier and subject to removal from the dataset
+
+```{r}
+library(lattice)
+
+bwplot(~yield.1cut|env,dat1)
+dat1.y1.out1 <- dat1 %>%
+  filter(env=="R100.2019"&yield.1cut>10000) %>%
+  dplyr::select(id,yield.1cut) %>%
+  pull(id)
+dat1.y1.out2 <- dat1 %>%
+  filter(env=="R70.2017"&yield.1cut>6000) %>%
+  dplyr::select(id,yield.1cut) %>%
+  pull(id)
+dat1.y1.out <- c(dat1.y1.out1,dat1.y1.out2)
+rm(dat1.y1.out1,dat1.y1.out2)
+
+bwplot(~yield.2cut|env,dat3)
+
+bwplot(~yield.3cut|env,dat3)
+
+bwplot(~yield.total|env,dat3)
+
+bwplot(~RFQ.1cut|env,dat1)
+dat1.q1.out <- dat1 %>%
+  filter(env=="R70.2017"&RFQ.1cut>160) %>%
+  dplyr::select(id,RFQ.1cut) %>%
+  pull(id)
+
+bwplot(~RFQ.2cut|env,dat3)
+
+bwplot(~RFQ.3cut|env,dat3)
+
+```
+
+In R100.2019, plot 111 is also listed as an outlier because it's yield
+for the first cut was
+`r subset(dat1, env=="R100.2019" & plot=="111")$yield.1cut`,
+aproximately 10x below the median yield for that treatment in that
+environment, which was
+`r median(subset(dat1, env=="R100.2019" & treatment=="DO")$yield.1cut)`.
+
+```{r outlier-free datasets, include=FALSE, cache=TRUE}
+dat %>%
+  filter(env=="R100.2019") %>%
+  dplyr::select(id,plot,yield.1cut) %>%
+  arrange(yield.1cut)
+
+dat1.y1.out <- c(dat1.y1.out,107)
+
+dat1.y1.df <- dat1 %>%
+  filter(id!=138) %>%
+  filter(id!=187) %>%
+  filter(id!=107)
+#this dataframe is for analysis of yield.1cut responses
+
+dat1.q1.df <- dat1 %>%
+  filter(id!=189) 
+#this dataframe is for analysis of RFQ.1cut responses
+
+#dat1 and dat3 are sufficient for all other responses
+
+rm(dat1.q1.out,dat1.y1.out)
+
+```
+
+
+```{r tdat inspection}
+# remember tdat$id has duplicated id values, complications dplyr::join
+
+sum(!is.na(tdat$yield))
+#so we have 251 yield observations in tdat
+
+sum(!is.na(dat1$yield.1cut))
+sum(!is.na(dat1$yield.2cut))
+sum(!is.na(dat1$yield.3cut))
+144+71+36
+
+sum(!is.na(dat3$yield.1cut))
+sum(!is.na(dat3$yield.2cut))
+sum(!is.na(dat3$yield.3cut))
+108+71+36
+
+# tdat has same amount of yield data as dat1, but less than dat3
+# dat1 contains R70.2018, if we remove R70.2018 data, then tdat=dat3
+
+sum(!is.na(subset(tdat,env!="R70.2018")$yield))
+
+
+```
+
+
+# Run all code above
+
+```{r}
+
+```
+
+# Analysis progression
+
+Whole plot: Timing of first cut
+
+Split plot: intensity of harvest
+
+We organize this analysis based on response variable
+
+*yield* : yield.total, yield.1cut, yield.2cut, yield.3cut.
+
+*Quality* :RFQ.total, RFQ.1cut, RFQ.2cut, RFQ.3cut
+
+*Profitability* : return.total, return.1cut, return.2cut, return.3cut
+
+For all responses, we begin with a global model, as described by
+Anderson and Burnham (2002).
+
+Our global model is a linear mixed effect model containing the following
+effects...
+
+*Fixed effects*: timing, intensity, timing\*intensity
+
+*Random effects*: block nested within site, timing, env
+
+Following analysis by our global model, we examined the distribution of
+the response and the variance explained by random effects. We then
+attempted to achieve a more parsimonious model by using generalized linear
+mixed effect models that more accurately describe the distribution of
+the response and we remove random effects that do not explain variance.
+We test the fit of the improved models using AIC criterion and
+log-liklihood tests. If all random effects are removed from a model, we
+also perform box-cox corrections.
+
+For the purposes of the publication and this rmarkdown file, we only report the global model outputs. See fig.analysis.rmd for an in-depth analysis, which ultimately finds the conclusions of the various models to be the same.
+
+*Naming conventions of objects: objects are named using the convention
+[response][effect][model number]. Response naming conventions
+are...yt=yield total, y1=yield first cut, q1=relative forage quality of
+first cut, r1=net returns of first cut. Effect naming conventions
+are...tr=treatment, t=timing.1cut, i=follow-up cut/intensity of harvest.
+For example, an object named y1.t.f.1 means the response variable is the
+yield of the first cut, the fixed effects are the timing of the first
+cut and the follow-up cut treatment, and this is the first model.*
+
+*Note: we use "follow-up cut" in the analysis, but we use "harvest
+intensity" in the manuscript. They are the same thing* *Note: we use
+"year 1" and "year 2" to refer to the years of data collection in the
+experiment, not the age of the kernza stand* *Note: we use the dat3
+dataset when we are looking at yearly totals of yield and quality
+because R70.2018 lacked september and october harvests*
+
+# General trends
+
+Briefly, let's look at general trends in the data
+
+*Note: we use the dat3 dataset when we are looking at yearly totals of
+yield and quality because R70.2018 lacked september and october
+harvests*
+
+```{r}
+library(lattice)
+## yield total
+bwplot(yield.total~timing.1cut|env, dat3)
+#delaying first cut (dough) resulted in higher forage yields
+bwplot(yield.total~follow.cut|env, dat3)
+#having multiple cuts resulted in higher forage yields
+
+## rfq total
+bwplot(RFQ.total~timing.1cut|env, dat3)
+# delaying first cut (dough) resulted in lower forage quality
+bwplot(RFQ.total~follow.cut|env, dat3)
+#having multiple cuts didn't change rfq total too much
+
+```
+
+We observe an expected trend; as the IWG matures, it's yield increases
+but its quality decreases.
+
+# 3-way full model
+
+```{r}
+# yield.Mg
+global.yield <- lmer(yield.Mg~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(global.yield)
+car::Anova(global.yield)
+
+
+# protein
+global.protein <- lmer(protein~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+# summary(global.protein)
+car::Anova(global.protein)
+# ADF
+global.adf <- lmer(ADF~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+# summary(global.adf)
+car::Anova(global.adf)
+# NDF
+global.ndf <- lmer(NDF~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+# summary(global.ndf)
+car::Anova(global.ndf)
+# NDFD48
+global.ndfd <- lmer(NDFD48~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+# summary(global.ndfd)
+car::Anova(global.ndfd)
+# RFV
+global.rfv <- lmer(RFV~timing.1cut*follow.cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+# summary(global.rfv)
+car::Anova(global.rfv)
+
+```
+
+This results in a rank deficient model, which is not necessarily a problem, but it isn't ideal. This may indicate that we simply don't have enough data to model the number of different parameters (interactions) we are asking the model to do. This makes sense to me.  
+Read these posts about the issue.  
+https://stackoverflow.com/questions/37090722/lme4lmer-reports-fixed-effect-model-matrix-is-rank-deficient-do-i-need-a-fi
+https://stats.stackexchange.com/questions/35071/what-is-rank-deficiency-and-how-to-deal-with-it/35077#35077
+
+```{r add annual cumulative yield into tdat}
+
+# need to unmelt data frame
+# select every part of a plots identity except cutting
+# site,year,plot
+# rowsums yield, na.rm=T
+
+```
+
+
+
+
+# Yield.total
+
+Response: total dry matter yield accumulated from a given plot over 1
+year in kg ha
+
+## global model
+
+```{r with timing.1cut as random effect}
+
+yt.t.i.1 <- lmer(yield.total~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(yt.t.i.1)
+
+car::Anova(yt.t.i.1)
+# car::Anova(yt.t.i.1, test.statistic="F")
+# car::Anova(yt.t.i.1, error.estimate="deviance")
+
+cld(emmeans(yt.t.i.1, ~follow.cut))
+multcomp::cld(emmeans(yt.t.i.1, ~follow.cut))
+
+multcomp::cld(emmeans(yt.t.i.1, ~follow.cut),
+    Letters = LETTERS)
+
+
+
+
+
+##making a model
+# y=Tijk + 
+
+summary(yt.t.i.1)$coefficients
+
+
+
+qqplot(yt.t.i.1)
+plot(yt.t.i.1)
+
+yt.t.i.1 <- lmer(log(yield.total)~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+
+densityplot(dat3$yield.total)
+densityplot(sqrt(dat3$yield.total))
+densityplot(log(dat3$yield.total))
+
+```
+
+## practice with predict function
+
+```{r, eval=F}
+pred <- dat3 %>%
+  dplyr::select(timing.1cut,follow.cut,yield.total,site,block,env) %>% mutate(yield.total.pred=NA)
+
+pred$yield.total.pred<-predict(yt.t.i.1,pred);pred
+
+pred %>%
+  ggplot(aes(timing.1cut)) +
+  # geom_point(aes(y=yield.total.pred),
+  #            color="blue") +
+  # geom_point(aes(y=yield.total/1000),
+  #            color="red") +
+  stat_summary(aes(y=yield.total.pred),
+               geom = "point",
+               size=4) +
+  stat_summary(aes(y=yield.total/1000),
+               geom = "point",
+               # color="orange",
+               size=4) +
+  labs(y="Mg ha forage")
+#^ predicted data is much higher 
+```
+
+
+
+# Yield.1cut
+
+Response: total dry matter yield recorded at the first cut kg ha
+
+## global model
+
+```{r}
+
+y1.t.i.1 <- lmer(yield.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1.y1.df)
+summary(y1.t.i.1)
+car::Anova(y1.t.i.1)[3]
+cld(emmeans(y1.t.i.1, ~timing.1cut))
+
+```
+
+
+# Yield.2cut
+
+Response: total dry matter yield recorded at the second cut kg ha
+
+## global model
+
+```{r}
+y2.t.i.1 <- lmer(yield.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(y2.t.i.1)
+car::Anova(y2.t.i.1)[3]
+cld(emmeans(y2.t.i.1, ~timing.1cut))
+```
+
+
+# Yield.3cut
+
+Response: total dry matter yield recorded at the third cut kg ha
+
+## global model
+
+```{r}
+y3.t.i.1 <- lmer(yield.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(y3.t.i.1)
+car::Anova(y3.t.i.1)[3]
+cld(emmeans(y3.t.i.1, ~timing.1cut))
+```
+
+
+# RFV.total
+
+Response: Relative forage quality of the dry matter accumulated from a
+given plot over 1 year in kg ha *Note: This is the RFV of each harvested
+weighted by its percent contribution to yield*
+
+```{r}
+dat3 %>%
+  group_by(timing.1cut) %>%
+  summarise(m=mean(na.omit(RFV.total)))
+```
+
+
+```{r}
+
+qt.t.i.1 <- lmer(RFV.total~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(qt.t.i.1)
+car::Anova(qt.t.i.1)
+cld(emmeans(qt.t.i.1, ~timing.1cut))
+cld(emmeans(qt.t.i.1, ~timing.1cut*follow.cut))
+
+```
+
+# RFV.1cut
+
+Response: RFV recorded at the first cut
+
+```{r}
+
+q1.t.i.1 <- lmer(RFV.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1.q1.df)
+summary(q1.t.i.1)
+car::Anova(q1.t.i.1)[3]
+cld(emmeans(q1.t.i.1, ~timing.1cut))
+
+```
+
+
+# RFV.2cut
+
+Response: RFV recorded at the second cut
+
+```{r}
+
+q2.t.i.1 <- lmer(RFV.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(q2.t.i.1)
+car::Anova(q2.t.i.1)[3]
+cld(emmeans(q2.t.i.1, ~timing.1cut))
+
+```
+
+# RFV.3cut
+
+Response: total dry matter RFV recorded at the third cut kg ha
+
+```{r}
+q3.t.i.1 <- lmer(RFV.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(q3.t.i.1)
+car::Anova(q3.t.i.1)
+```
+
+
+
+# RFQ.total
+
+Response: Relative forage quality of the dry matter accumulated from a
+given plot over 1 year in kg ha *Note: This is the RFV of each harvested
+weighted by its percent contribution to yield*
+
+```{r}
+
+qt.t.i.1 <- lmer(RFQ.total~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(qt.t.i.1)
+car::Anova(qt.t.i.1)[3]
+cld(emmeans(qt.t.i.1, ~timing.1cut))
+
+```
+
+# RFQ.1cut
+
+Response: RFQ recorded at the first cut
+
+```{r}
+
+q1.t.i.1 <- lmer(RFQ.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1.q1.df)
+summary(q1.t.i.1)
+car::Anova(q1.t.i.1)[3]
+cld(emmeans(q1.t.i.1, ~timing.1cut))
+
+```
+
+
+# RFQ.2cut
+
+Response: RFQ recorded at the second cut
+
+```{r}
+
+q2.t.i.1 <- lmer(RFQ.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(q2.t.i.1)
+car::Anova(q2.t.i.1)[3]
+cld(emmeans(q2.t.i.1, ~timing.1cut))
+
+```
+
+# RFQ.3cut
+
+Response: total dry matter RFQ recorded at the third cut kg ha
+
+```{r}
+q3.t.i.1 <- lmer(RFQ.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(q3.t.i.1)
+car::Anova(q3.t.i.1)
+```
+
+
+# return.total
+
+Response: estimated net returns (aka profitability) for the accumulated
+forage from a given plot over the course of a year
+
+## global model
+
+```{r}
+
+rt.t.i.1 <- lmer(return.total~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(rt.t.i.1)
+car::Anova(rt.t.i.1)
+cld(emmeans(rt.t.i.1, ~follow.cut))
+# cld(emmeans(rt.t.i.1, ~follow.cut*timing.1cut))
+
+
+```
+
+
+# Forage quality component analysis
+For the table, we present the mean and standard error at time points across environments. So for example, in the column RFQ, there are rows for the timing.1cut and then subseted below each row is the intensities (1cut,2cut,3cut). The mean+se reported in the cell for Timing=boot and intensity=1cut represents the average RFQ for the environments where that data exists. In order to compare the mean in that cell with the cell that is the same timing=boot but intensity=2, we are not looking at a different response variable. In other words, we may need to alter the data so that there is just RFQ and RFQ.1cut vs RFQ.2cut are all just RFQ and 1cut vs 2cut are identifier variables. The challenge is that this data set for a given row may have up to 3 RFQ values (RFQ.1cut, RFQ.2cut, RFQ.3cut) and we cannot average this into a new column because we may need to compare between these RFQ values, so essentially we may need to alter this dataframe where a row that contains 3 cuts ends up as 3 seperate rows that all have a single RFQ value and an additional column that is a factor of 'cut' with 3 levels '1cut' 2cut' or '3cut'. The final dataset will have a column named 'RFQ.xcut'. To determine the RFQ.1cut, you would need to filter by 'xcut=1cut'
+
+
+
+Data Transformation tasks for original dataset to generate tables
+
+For all columns ending in '.1cut', 
+
+
+```{r repeat, eval=F}
+
+driveurl<-"https://docs.google.com/spreadsheets/d/1sRbJgHVK8YPWsqQXDi8jhn5P1qeqs1bfm0vvR4k-wC8/edit#gid=2030086613"
+
+tdat<-read_sheet(driveurl,gs4_deauth())
+
+library(dplyr)
+tdat<-tdat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
+tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
+tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+# Forage quality
+
+DM<-tdat$dry.matter
+CP<-tdat$protein
+NDF<-tdat$NDF
+NDFD<-tdat$NDFD48
+ADF<-tdat$ADF
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+tdat$RFQ<-DMI*TDN/1.23
+tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#outlier elimination still required.
+
+#we will at least eliminate I2
+
+tdat <- tdat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+
+
+```
+
+
+
+## RFQ
+Reported RFQ at the time of harvest. This is not weighted or summed across years.
+
+```{r}
+
+q.t.i.1 <- lmer(RFQ~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~factor(xcut)))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+#for Jake's table
+
+car::Anova(lmer(RFQ~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, xcut=="1")))
+
+ob<- lmer(RFQ~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, xcut=="1"))
+
+cld(emmeans(ob,~timing.1cut))
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(RFQ~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(RFQ~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(RFQ~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+## RFV
+
+```{r}
+tdat %>%
+  group_by(timing.1cut, xcut) %>%
+  summarise(m=mean(na.omit(RFV)))
+
+```
+
+
+```{r}
+
+q.t.i.1 <- lmer(RFV~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+
+q.t.i.1 <- lmer(log(RFV)~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut),
+    )
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(RFV~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(RFV~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(RFV~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+
+## Protein
+
+
+
+```{r eval=F}
+# q.t.i.1 <- tdat %>%
+#   filter(xcut==1)%>%
+#   lmer(protein~timing.1cut*follow.cut +
+#                    (1|site/block/timing.1cut) + (1|env),data = .)
+# summary(q.t.i.1)
+# car::Anova(q.t.i.1)
+# cld(emmeans(q.t.i.1, ~timing.1cut))
+# cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+```
+
+
+```{r}
+
+q.t.i.1 <- lmer(protein~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(protein~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(protein~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(protein~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+
+
+## ADF
+
+
+```{r}
+
+q.t.i.1 <- lmer(ADF~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(ADF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(ADF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(ADF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+
+## NDF
+
+
+```{r}
+
+q.t.i.1 <- lmer(NDF~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(NDF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(NDF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(NDF~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+
+## NDFD48
+
+
+```{r}
+
+q.t.i.1 <- lmer(NDFD48~timing.1cut*factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 tdat)
+summary(q.t.i.1)
+car::Anova(q.t.i.1)
+cld(emmeans(q.t.i.1, ~timing.1cut))
+cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
+
+
+```
+
+```{r}
+q.t.i.boot <- lmer(NDFD48~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="boot"))
+summary(q.t.i.boot)
+car::Anova(q.t.i.boot)
+cld(emmeans(q.t.i.boot, ~factor(xcut)))
+
+
+```
+
+```{r}
+q.t.i.anthesis <- lmer(NDFD48~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="anthesis"))
+summary(q.t.i.anthesis)
+car::Anova(q.t.i.anthesis)
+cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
+```
+
+```{r}
+q.t.i.dough <- lmer(NDFD48~factor(xcut) +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(tdat, timing.1cut=="dough"))
+summary(q.t.i.dough)
+car::Anova(q.t.i.dough)
+cld(emmeans(q.t.i.dough, ~factor(xcut)))
+```
+
+## 1cut
+
+```{r protein}
+
+p1.t.i.1 <- lmer(protein.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1)
+summary(p1.t.i.1)
+car::Anova(p1.t.i.1)[3]
+cld(emmeans(y1.t.i.1, ~timing.1cut))
+
+```
+
+```{r adf}
+
+adf.t.i.1 <- lmer(ADF.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1)
+summary(adf.t.i.1)
+car::Anova(adf.t.i.1)[3]
+cld(emmeans(adf.t.i.1, ~timing.1cut))
+
+```
+
+```{r ndf}
+
+ndf.t.i.1 <- lmer(NDF.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1)
+summary(ndf.t.i.1)
+car::Anova(ndf.t.i.1)[3]
+cld(emmeans(ndf.t.i.1, ~timing.1cut))
+
+```
+
+
+```{r ndfd48}
+
+ndfd.t.i.1 <- lmer(NDFD48.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat1)
+summary(ndfd.t.i.1)
+car::Anova(ndfd.t.i.1)[3]
+
+```
+
+## 2cut
+
+```{r protein}
+
+p2.t.i.1 <- lmer(protein.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(p2.t.i.1)
+car::Anova(p2.t.i.1)[3]
+cld(emmeans(y1.t.i.1, ~timing.1cut))
+
+```
+
+```{r adf}
+
+adf2.t.i.1 <- lmer(ADF.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(adf2.t.i.1)
+car::Anova(adf2.t.i.1)[3]
+cld(emmeans(adf2.t.i.1, ~timing.1cut))
+
+```
+
+```{r ndf}
+
+ndf2.t.i.1 <- lmer(NDF.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(ndf2.t.i.1)
+car::Anova(ndf2.t.i.1)[3]
+cld(emmeans(ndf2.t.i.1, ~timing.1cut))
+
+```
+
+
+```{r ndfd48}
+
+ndfd2.t.i.1 <- lmer(NDFD48.2cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(ndfd2.t.i.1)
+car::Anova(ndfd2.t.i.1)[3]
+
+```
+
+## 3cut
+
+```{r protein}
+
+p3.t.i.1 <- lmer(protein.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(p3.t.i.1)
+car::Anova(p3.t.i.1)[3]
+
+```
+
+```{r adf}
+
+adf3.t.i.1 <- lmer(ADF.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(adf3.t.i.1)
+car::Anova(adf3.t.i.1)[3]
+cld(emmeans(adf3.t.i.1, ~timing.1cut))
+
+```
+
+```{r ndf}
+
+ndf3.t.i.1 <- lmer(NDF.1cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(ndf3.t.i.1)
+car::Anova(ndf3.t.i.1)[3]
+cld(emmeans(ndf3.t.i.1, ~timing.1cut))
+
+```
+
+
+```{r ndfd48}
+
+ndfd3.t.i.1 <- lmer(NDFD48.3cut~timing.1cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+summary(ndfd3.t.i.1)
+car::Anova(ndfd3.t.i.1)[3]
+
+```
+
+
+# Growing Degree Days
+
+Growing degree days vs. yield and quality
+
+## yield.1cut
+
+```{r}
+ggplot(dat1.y1.df, aes(y=yield.1cut, x=gdd.1cut, color=year))+
+  #facet_grid(~year)+
+  geom_point()+
+  geom_smooth(method="lm", se=F, show.legend=F, color="black")+
+  geom_smooth(method="lm", se=F, show.legend=F, color="red", formula = y ~ x + I(x^2))
+
+```
+
+Now let's statistically compare the linear and quadratic model for
+goodness of fit.
+
+```{r JPB model fitting aesss}
+library(nlme)
+#a linear model
+mod1<-lme(yield.1cut~gdd.1cut, random=~1|site/block, 
+          data=dat1.y1.df, na.action=na.omit,
+          method="ML")
+anova(mod1)  
+summary(mod1)
+#a quadratic model
+mod2<-lme(yield.1cut~gdd.1cut+I(gdd.1cut^2), 
+          random=~1|site/block, data=dat1.y1.df, na.action=na.omit,
+          method="ML")
+anova(mod2)
+#Comparing models
+anova(mod1, mod2) 
+```
+
+We conclude model 2 (the quadratic) fits the data better and differs
+from model 1.
+
+```{r}
+summary(mod2)
+coef(mod2)
+
+cor.test(dat1$yield.1cut,dat1$RFV.1cut)
+dat1 %>%
+  mutate(yield.1cut=yield.1cut/100)%>%
+  ggplot(aes(gdd.1cut)) +
+  geom_point(aes(y=yield.1cut),
+             color="yellow") +
+  geom_point(aes(y=RFV.1cut),
+             color="red") +
+  geom_smooth(aes(y=yield.1cut),
+              color="yellow",
+              method = "lm") +
+  geom_smooth(aes(y=RFV.1cut),
+              color="red",
+              method = "lm") +
+  theme_bw()
+
+library(performance)
+r2(mod2)
+```
+
+```{r}
+mod2.Mg<-lme((yield.1cut/1000)~gdd.1cut+I(gdd.1cut^2), 
+          random=~1|site/block, data=dat1.y1.df, na.action=na.omit,
+          method="ML")
+summary(mod2.Mg)
+coef(mod2.Mg)
+
+
+```
+
+
+yield.1cut=14.5x*-0.005x2 - 6673
+
+Marginal r-squared is 0.3 , so about 30% of the variance is explained by growing degree days. 
+
+"the marginal R2 is the fixed effects variance, divided by the total variance (i.e. fixed + random + residual). This value indicates how much of the "model variance" is explained by the fixed effects part only.
+The conditional R2 is the fixed+random effects variance divided by the total variance, and indicates how much of the "model variance" is explained by your "complete" model"
+
+## RFV.1cut
+
+```{r}
+
+ggplot(dat1.q1.df, 
+       aes(y=RFQ.1cut, x=gdd.1cut, color=site))+
+  geom_point()+
+  geom_smooth(method="lm", se=F, show.legend=F)+ #reg line by site
+  geom_smooth(method="lm", se=F, show.legend=F, color="black")+ #overall reg line
+  geom_smooth(method="lm", se=F, show.legend=F, formula = y ~ x + I(x^2), color="green") +
+  labs(title="RFQ vs GDD across both field years")
+#seems pretty linear, but should test both optoins
+
+```
+
+```{r}
+# test linear vs quadratic
+
+library(nlme)
+#a linear model
+mod4<-lme(RFV.1cut~gdd.1cut, random=~1|site/block, 
+          data=dat1.q1.df, na.action=na.omit,
+          method="ML")
+anova(mod4)  
+summary(mod4)
+#a quadratic model
+mod5<-lme(RFV.1cut~gdd.1cut+I(gdd.1cut^2), 
+          random=~1|site/block, data=dat1.q1.df, na.action=na.omit,
+          method="ML")
+anova(mod5)
+#Comparing models
+anova(mod4, mod5) 
+```
+
+We conclude that the quadratic model (mod5) is superior for predicting forage
+quality change vs GDD accumulation
+
+
+```{r}
+summary(mod5)
+coef(mod5)
+library(performance)
+r2(mod5)
+```
+RFV= -0.18x + 0.000055x2 + 219  
+
+Marginal r-squared is 0.65, so about 64.8% of variance is explained by GDD accumulation
+
+
+## optimizing parameters
+
+```{r}
+# you can use nls to optimize parameters of quadratic function, but these can already be gotten using the lm function
+# https://martinlab.chem.umass.edu/r-fitting-data/
+
+
+```
+
+
+
+
+## predicted max&min yield from GDD
+
+Now we determine at what level of GDD accumulation our maximimum forage
+yield.1cut occurs by calculate at what point our quadratic function we
+fitted onto the yield.1cut vs. GDD data has a slope of zero, and the
+corresponding GDD, this value is our "agronomically optimal growing
+degree day accumulation" or AOGDD
+
+```{r JPB edit}
+#first, define the function
+qmmod<-function(x, alpha, estAOGDD, gamma){
+  alpha - ((2*gamma*estAOGDD)*x)+(gamma*x^2)
+}
+
+#use nls to solve for coefficients
+#must provide coefficient estimates as starting points for function so it knows where to start searching
+#quadratic fitted function (red) in chunk 13 appears to max out at GDD=1350
+#set AOGDD=1350
+#set gamma to -0.01 as this has previously provided success
+#if issues arise, tweak gamma first, than alpha
+mod3<-nls(yield.1cut ~ qmmod(gdd.1cut, alpha, estAOGDD, gamma), data=dat1.y1.df, 
+              start = list(alpha = 4000, estAOGDD = 1350, gamma = -0.01), 
+              control = list(maxiter=200))                        
+
+AOGDD <-coef(mod3)[2]
+AOGDD #estimate max yield for first cut is when 1525 GDD have accumulated
+#summary(mod3) 
+maxyield.1cut <- predict(mod3, data.frame(expand.grid(gdd.1cut=AOGDD, env=NA, block=NA)), level=0)
+maxyield.1cut #estimate max yield from first cut is 3976 kg ha dry forage biomass
+
+```
+
+We conclude that our maximum yield for the first forage cut is 3976 kg
+ha dry forage biomass and that this is achievable when 1525 GDD have
+accumulated, which appears to be after anthesis and before dough stage.
+
+
+
+## predicted max&min RFQ from GDD
+
+```{r}
+qmmod<-function(x, alpha, estAOGDD, gamma){
+  alpha - ((2*gamma*estAOGDD)*x)+(gamma*x^2)
+}
+
+mod6<-nls(RFQ.1cut ~ qmmod(gdd.1cut, alpha, estAOGDD, gamma), data=dat1.q1.df, 
+              start = list(alpha = 4000, estAOGDD = 1350, gamma = -0.01), 
+              control = list(maxiter=200))                        
+
+ABGDD <-coef(mod6)[2]
+ABGDD #estimate the minimum RFQ for the first cut is after 1794 GDD have accumulated.
+
+#summary(mod3) 
+minquality.1cut <- predict(mod6, data.frame(expand.grid(gdd.1cut=ABGDD, env=NA, block=NA)), level=0)
+minquality.1cut #estimate minimum quality will be RFQ=79
+```
+
+# Figures for publication
+
+## setup  ----------------------------------------------------------
+
+
+```{r}
+cbp <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+bernie_mittens = c("#372421","#50506D","#855F4C","#465952","#B7A79B")
+cbp2 <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+
+library(ggpubr)
+
+```
+
+## site conditions, fig 1  ---------------------------------------------------------
+
+#### Precipitation, cumulative
+
+
+```{r}
+# lubridate::yday(weather1$date),"01-01-2017"
+# 
+# weather1$date
+# 
+# as.POSIXct(weather1$date, 
+#            format="%m/%d/%Y")
+# yday(as.POSIXct(weather1$date, 
+#            format="%m/%d/%Y"))
+
+library(ggplot2)
+ggplot(weather1, 
+       aes(x = as.Date(yday(date), "2017-01-01"), 
+           y = cum.precip, 
+           color = factor(year))) +
+  geom_path(size=1) +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative precipitation \n(mm)") +
+  theme_bw() +
+  scale_color_manual(values = cbp)
+
+```
+
+### GDD, cumulative
+
+```{r}
+ggplot(subset (weather1, year!="30 year average"), 
+       aes(x = as.Date(yday(date), "2017-01-01"), 
+           y = Cumulative.GDD, 
+           color = factor(year))) +
+  geom_path(size=1) +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Growing Degree Day\nAccumulation") +
+  theme_bw() +
+  scale_color_manual(values = cbp[2:4])
+```
+
+
+### Precip+GDD vs. sample timing
+
+```{r}
+
+dat1 %>%
+  group_by(year,follow.cut) %>%
+  drop_na(date.1cut) %>%
+  summarise(spring.cuts = unique(date.1cut)#,
+            # doy = yday(unique(date.1cut))
+            ) %>%
+  View()
+
+
+
+library(tidyr)
+sum.d1cut <- dat1 %>%
+  group_by(timing.1cut) %>%
+  drop_na(date.1cut) %>%
+  summarise(spring.cuts = unique(date.1cut),
+            doy = yday(unique(date.1cut)))
+
+sum.d1cut <- dat1 %>%
+  group_by(timing.1cut) %>%
+  drop_na(date.1cut) %>%
+  summarise(spring.cuts = unique(date.1cut),
+            doy = yday(unique(date.1cut)))
+
+sum.d1cut %>%
+  group_by(timing.1cut) %>%
+  summarise(doy.av = mean(doy))
+
+sum.d2cut <- dat1 %>%
+  group_by(follow.cut) %>%
+  drop_na(date.2cut) %>%
+  summarise(sept.cut = unique(date.2cut),
+            doy = yday(unique(date.2cut)))
+
+sum.d2cut %>%
+  filter(follow.cut=="september") %>%
+  group_by(follow.cut) %>%
+  summarise(doy.av = mean(doy))
+
+sum.d3cut <- dat1 %>%
+  group_by(follow.cut) %>%
+  drop_na(date.3cut) %>%
+  summarise(oct.cut = unique(date.3cut),
+            doy = yday(unique(date.3cut)))
+
+sum.d3cut %>%
+  filter(follow.cut=="october") %>%
+  group_by(follow.cut) %>%
+  summarise(doy.av = mean(doy))
+
+doy.avg <- c(159,178,201,265,304) 
+sample.times <- c("b","a","d","2","3")
+sample.times.df <- data.frame(sample.times,doy.avg)
+
+rm(sum.d1cut,sum.d2cut,sum.d3cut)
+
+GDD.1 <- ggplot() +
+  geom_path(data=subset(weather1, year!="30 year average"),
+            aes(x = as.Date(yday(date), "2017-01-01"), 
+                y=Cumulative.GDD,
+                color=year),
+            linetype=1,
+            size=1,
+            alpha=0.7) +
+  geom_vline(data=sample.times.df,
+             xintercept = as.Date(doy.avg, "2017-01-01"),
+             linetype="dotted",
+             size=.75) +
+  geom_label(data=sample.times.df,
+             aes(x=as.Date(doy.avg, "2017-01-01"),
+                 y=-250,
+                 label=sample.times,
+                 # hjust = .5,
+                 vjust = 0,
+                 size=3)) +
+  scale_color_manual(values = c("#818181", "#ABABAB", "#CCCCCC"))+
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative growing degree days") +
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10));GDD.1
+
+
+precip.2 <- ggplot(weather1, 
+                   aes(x = as.Date(yday(date), "2017-01-01"), 
+                       y = cum.precip, 
+                       color = factor(year))) +
+  geom_path(size=1) +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative precipitation (mm)") +
+  theme_bw() +
+  scale_color_manual(values = grey.colors(n=4,
+                                          start = 0.2,
+                                          end=0.8)) +
+  geom_vline(xintercept = as.Date(doy.avg, "2017-01-01"),
+             linetype="dotted",
+             size=.72)+
+  theme(
+    legend.position = c(.05, .95),
+    legend.justification = c("left", "top"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size=10),
+    legend.text = element_text(size=10));precip.2
+
+
+
+ggarrange(precip.2, GDD.1, ncol = 1, nrow = 2, align = "v")
+# ggsave("site.conditions.png")
+ggsave("fig1.png", width = 5.37,height=6.31,
+       units = "in", dpi=500)
+
+```
+
+
+```{r}
+GDD.3 <- ggplot() +
+  geom_path(data=subset(weather1, year!="30 year average"),
+            aes(x = as.Date(yday(date), "2017-01-01"), 
+                y=`Cumulative GDD`,
+                color=year),
+            linetype=1,
+            size=1,
+            alpha=0.7) +
+  geom_vline(data=sample.times.df,
+             xintercept = as.Date(doy.avg, "2017-01-01"),
+             linetype="dotted",
+             size=.75) +
+  geom_label(data=sample.times.df,
+             aes(x=as.Date(doy.avg, "2017-01-01"),
+                 y=-250,
+                 label=sample.times,
+                 # hjust = .5,
+                 vjust = 0,
+                 size=3)) +
+  scale_color_manual(values = cbp[2:4])+
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative growing degree days") +
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10),
+        plot.margin = unit(c(0,1,1,1),"cm"));GDD.3
+
+
+precip.3 <- ggplot(weather1, 
+                   aes(x = as.Date(yday(date), "2017-01-01"), 
+                       y = cum.precip, 
+                       color = factor(year))) +
+  geom_path(size=1) +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative precipitation (mm)") +
+  theme_bw() +
+  scale_color_manual(values = cbp) +
+  geom_vline(xintercept = as.Date(doy.avg, "2017-01-01"),
+             linetype="dotted",
+             size=.72)+
+  theme(legend.position = c(.05, .95),
+    legend.justification = c("left", "top"),
+    axis.title = element_text(size = 12),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size=10),
+    plot.margin = unit(c(1,1,-.7,1),"cm"));precip.3
+
+
+ggarrange(precip.3, GDD.3, ncol = 1, nrow = 2, align = "v",
+          heights = c(3.5,4))
+ggsave("site.conditions.png")
+ggsave("site.conditions.png", width = 6.04,height = 6.24,
+       dpi = 500)
+
+
+
+```
+
+
+## RFV.total+$ effect size, fig X --------------------------------------------------
+
+```{r}
+yt.fig <- dat3 %>%
+  filter(!is.na(yield.total)) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  summarise(mean=mean(yield.total),n=n(),
+            se=sd(yield.total)/sqrt(n)) %>%
+  ggplot(aes(timing.1cut,mean,
+             group=follow.cut,
+             fill=follow.cut))+
+  geom_col(position = position_dodge(0.8),
+           width=0.7)+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=0,
+                position = position_dodge(0.8)) +
+  scale_fill_manual(name="Harvest intensity",
+                    values=cbp2, labels=c("1 cut", "2 cuts", "3 cuts"),
+                    guide=guide_legend())+
+  labs(y=expression("Forage yield" ~ (Mg ~ ha^{-1}*yr^{-1})),
+       x="") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,7))+
+  theme(legend.position = "none",
+        axis.text.x.bottom = element_blank());yt.fig
+
+qt.fig <- dat3 %>%
+  filter(!is.na(RFV.total)) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  summarise(mean=mean(RFV.total),n=n(),
+            se=sd(RFV.total)/sqrt(n)) %>%
+  ggplot(aes(timing.1cut,mean,
+             group=follow.cut,
+             fill=follow.cut))+
+  geom_col(position = position_dodge(0.8),
+           width=0.7)+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=0,
+                position = position_dodge(0.8)) +
+  scale_fill_manual(name="Harvest intensity",
+                    values=cbp2[2:4], labels=c("1 cut", "2 cuts", "3 cuts"),
+                    guide=guide_legend())+
+  labs(y="Relative forage value\n(cumulative weighted)",
+       x="") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,130))+
+  theme(legend.position = "none",
+        axis.text.x.bottom = element_blank(),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10))+  scale_fill_grey(  start = 0.2,
+  end = 0.8,
+  na.value = "red",
+  aesthetics = "fill");qt.fig
+
+rt.fig <- dat3 %>%
+  filter(!is.na(return.total)) %>%
+  mutate(timing.1cut = recode(timing.1cut,
+                              boot = "Boot",
+                              anthesis = "Anthesis",
+                              dough = "Dough",
+                              grain="Grain")) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  summarise(mean=mean(return.total),n=n(),
+            se=sd(return.total)/sqrt(n)) %>%
+  ggplot(aes(timing.1cut,mean,
+             group=follow.cut,
+             fill=follow.cut))+
+  geom_col(position = position_dodge(0.8),
+           width=0.7)+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=0,
+                position = position_dodge(0.8)) +
+  scale_fill_manual(name="Harvest intensity: ",
+                    values=cbp2[2:4], labels=c("1-cut", "2-cut", "3-cut"),
+                    guide=guide_legend())+
+  labs(y=expression("Net returns" ~ ("$" ~ ha^{-1}*yr^{-1})),
+       x="") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,500))+
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10))+
+  scale_fill_grey(
+  start = 0.2,
+  end = 0.8,
+  na.value = "red",
+  aesthetics = "fill");rt.fig
+
+ggarrange(qt.fig,rt.fig, 
+                     heights = c(9,11),
+                     # labels = c("A","B","C"),
+                     ncol = 1, nrow = 2,
+                     align = "v")
+ggsave("effectsize.png")
+ggsave("effectsize.png", width = 5.06, height = 6.95)
+
+
+```
+
+
+
+```{r eval=F}
+
+# qt.fig.2 <- dat3 %>%
+#   filter(!is.na(RFV.total)) %>%
+#   group_by(timing.1cut,follow.cut) %>%
+#   summarise(mean=mean(RFV.total),n=n(),
+#             se=sd(RFV.total)/sqrt(n)) %>%
+#   ggplot(aes(timing.1cut,mean,
+#              group=follow.cut,
+#              fill=follow.cut))+
+#   geom_col(position = position_dodge(0.8),
+#            width=0.7)+
+#   geom_errorbar(aes(ymin=mean-se,
+#                     ymax=mean+se),
+#                 width=0,
+#                 position = position_dodge(0.8)) +
+#   scale_fill_manual(name="Harvest intensity",
+#                     values=cbp2[2:4], labels=c("1 cut", "2 cuts", "3 cuts"),
+#                     guide=guide_legend())+
+#   labs(y="Relative forage value\n(cumulative weighted)",
+#        x="") +
+#   theme_bw() +
+#   scale_y_continuous(expand = c(0,0),
+#                      limits = c(0,130))+
+#   theme(legend.position = "none",
+#         axis.text.x.bottom = element_blank(),
+#         axis.title = element_text(size = 12),
+#         axis.text = element_text(size=10),
+#         legend.text = element_text(size=10),
+#         plot.margin = unit(c(0,1,0,1),"cm"));qt.fig.2
+# 
+# rt.fig.2 <- dat3 %>%
+#   filter(!is.na(return.total)) %>%
+#   mutate(timing.1cut = recode(timing.1cut,
+#                               boot = "Boot",
+#                               anthesis = "Anthesis",
+#                               dough = "Dough",
+#                               grain="Grain")) %>%
+#   group_by(timing.1cut,follow.cut) %>%
+#   summarise(mean=mean(return.total),n=n(),
+#             se=sd(return.total)/sqrt(n)) %>%
+#   ggplot(aes(timing.1cut,mean,
+#              group=follow.cut,
+#              fill=follow.cut))+
+#   geom_col(position = position_dodge(0.8),
+#            width=0.7)+
+#   geom_errorbar(aes(ymin=mean-se,
+#                     ymax=mean+se),
+#                 width=0,
+#                 position = position_dodge(0.8)) +
+#   scale_fill_manual(name="Harvest intensity: ",
+#                     values=cbp2[2:4], labels=c("1-cut", "2-cut", "3-cut"),
+#                     guide=guide_legend())+
+#   labs(y=expression("Net returns" ~ ("$" ~ ha^{-1}*yr^{-1})),
+#        x="") +
+#   theme_bw() +
+#   scale_y_continuous(expand = c(0,0),
+#                      limits = c(0,500))+
+#   theme(legend.position = "bottom",
+#         axis.title = element_text(size = 12),
+#         axis.text = element_text(size=10),
+#         legend.text = element_text(size=10),
+#         plot.margin = unit(c(.3,1,0,1),"cm"));rt.fig.2
+# 
+# ggarrange(qt.fig.2,rt.fig.2, 
+#                      heights = c(9,11),
+#                      # labels = c("A","B","C"),
+#                      ncol = 1, nrow = 2,
+#                      align = "v")
+
+```
+
+
+
+## yield+quality at time of cutting, fig 2
+###yield
+
+```{r dataset for figure for jake}
+library(dplyr)
+library(plotrix)
+tdat %>% 
+  mutate(yield=yield/1000)%>%
+  group_by(timing.1cut,xcut) %>%
+  summarise(yield=mean(na.omit(yield)),
+            sd=sd(yield,na.rm = T)) 
+#^ no idea why NA returned for sd!
+
+b1 <- tdat %>%
+  filter(timing.1cut=="boot" & xcut=="1") %>%
+  summarise(y=mean(yield),
+            se=std.error(yield))
+b2 <- tdat %>%
+  filter(timing.1cut=="boot" & xcut=="2") %>%
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+b3<-tdat %>%
+  filter(timing.1cut=="boot" & xcut=="3") %>%a
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+a1<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="1") %>%
+  summarise(y=mean(yield),
+            se=std.error(yield))
+a2<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="2") %>%
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+a3<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="3") %>%
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+d1<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="1") %>%
+  summarise(y=mean(yield),
+            se=std.error(yield))
+d2<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="2") %>%
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+d3<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="3") %>%
+  summarise(y=mean(na.omit(yield)),
+            se=std.error(yield,na.rm = T))
+
+df1<- rbind(b1,b2,b3,a1,a2,a3,d1,d2,d3);df1
+
+df1$trt.code<-c("b1","b2","b3","a1","a2","a3","d1","d2","d3")
+df1$y <- df1$y/1000
+df1$se <- df1$se/1000
+mean.se.df<-df1
+
+trt.code<-c("b1","b2","b3","a1","a2","a3","d1","d2","d3")
+timing.1cut<-c("Boot","Boot","Boot","Anthesis","Anthesis","Anthesis","Dough","Dough","Dough")
+xcut <- c("1","2","3","1","2","3","1","2","3")
+
+tukey<-c("B\nb","A\nbc","\nc","A\na","B\nc","\nc","A\na","B\nc","\nc")
+tukey.df <- cbind(trt.code,timing.1cut,xcut,tukey)
+tukey.df <- as.data.frame(tukey.df)
+
+mean.se.df$trt.code
+tukey.df$trt.code
+
+df2 <- left_join(mean.se.df,tukey.df,by="trt.code");df2
+df2
+
+df2 %>%
+  mutate(timing.1cut=factor(timing.1cut,levels = c("Boot","Anthesis","Dough"))) %>%
+  str()
+str(df2$timing.1cut)
+
+rm(a1,a2,a3,b1,b2,b3,d1,d2,d3)
+
+```
+
+
+```{r yield figure for Jake}
+yield.gg <- df2 %>%
+  mutate(timing.1cut=factor(timing.1cut,levels = c("Boot","Anthesis","Dough"))) %>%
+  ggplot(aes(x=timing.1cut,
+             y=y,
+             group=factor(xcut),
+             fill=factor(xcut))) +
+  geom_errorbar(aes(ymax=y+se,
+                    ymin=y-se),
+                  position = position_dodge(.75),
+                width=.4) +
+  geom_col(position=position_dodge(.75),
+           width=.7) +
+  geom_text(aes(label=tukey,
+                y=y+se+.21),
+            position = position_dodge(.75)) +
+  scale_fill_manual(name="",
+                    values=grey.colors(n=3,
+                                       start=0.2,
+                                       end=0.8), labels=c("1st cutting", "2nd cutting", "3rd cutting"),
+                    guide=guide_legend())+
+  labs(y=expression("Forage yield" ~ (Mg ~ ha^{-1})),
+       x="") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,4.5)) +
+  theme(legend.position = c(.05, .99),
+        legend.justification = c("left", "top"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10),
+        axis.text.x = element_blank());yield.gg
+
+# ggsave("yield.png")
+# ggsave("yield.png",width = 4.65,height = 3.94,units = "in")
+
+```
+
+###quality
+
+```{r data for figure}
+tdat %>% 
+  mutate(RFV=RFV/1000)%>%
+  group_by(timing.1cut,xcut) %>%
+  summarise(RFV=mean(na.omit(RFV)),
+            sd=sd(RFV,na.rm = T)) 
+#^ no idea why NA returned for sd!
+
+b1 <- tdat %>%
+  filter(timing.1cut=="boot" & xcut=="1") %>%
+  summarise(y=mean(RFV),
+            se=std.error(RFV))
+b2 <- tdat %>%
+  filter(timing.1cut=="boot" & xcut=="2") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+b3<-tdat %>%
+  filter(timing.1cut=="boot" & xcut=="3") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+a1<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="1") %>%
+  summarise(y=mean(RFV),
+            se=std.error(RFV))
+a2<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="2") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+a3<-tdat %>%
+  filter(timing.1cut=="anthesis" & xcut=="3") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+d1<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="1") %>%
+  summarise(y=mean(RFV),
+            se=std.error(RFV))
+d2<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="2") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+d3<-tdat %>%
+  filter(timing.1cut=="dough" & xcut=="3") %>%
+  summarise(y=mean(na.omit(RFV)),
+            se=std.error(RFV,na.rm = T))
+
+df3<- rbind(b1,b2,b3,a1,a2,a3,d1,d2,d3);df3
+
+df3$trt.code<-c("b1","b2","b3","a1","a2","a3","d1","d2","d3")
+df3$y <- df3$y
+df3$se <- df3$se
+mean.se.df<-df3
+
+trt.code<-c("b1","b2","b3","a1","a2","a3","d1","d2","d3")
+timing.1cut<-c("Boot","Boot","Boot","Anthesis","Anthesis","Anthesis","Dough","Dough","Dough")
+xcut <- c("1","2","3","1","2","3","1","2","3")
+
+tukey<-c("A\nab","B\nbc","\ncd","B\nde","AB\nab","\nabc","B\ne","A\na","\nbc")
+tukey.df <- cbind(trt.code,timing.1cut,xcut,tukey)
+tukey.df <- as.data.frame(tukey.df)
+
+mean.se.df$trt.code
+tukey.df$trt.code
+
+df4 <- left_join(mean.se.df,tukey.df,by="trt.code");df4
+df4
+
+df4 %>%
+  mutate(timing.1cut=factor(timing.1cut,levels = c("Boot","Anthesis","Dough"))) %>%
+  str()
+str(df4$timing.1cut)
+
+rm(a1,a2,a3,b1,b2,b3,d1,d2,d3)
+
+```
+
+
+```{r yield+quality figure for jake}
+rfv.gg <- df4 %>%
+  mutate(timing.1cut=factor(timing.1cut,levels = c("Boot","Anthesis","Dough"))) %>%
+  ggplot(aes(x=timing.1cut,
+             y=y,
+             group=factor(xcut),
+             fill=factor(xcut))) +
+  geom_errorbar(aes(ymax=y+se,
+                    ymin=y-se),
+                  position = position_dodge(.75),
+                width=.4) +
+  geom_col(position=position_dodge(.75),
+           width=.7) +
+  geom_text(aes(label=tukey,
+                y=y+se+7),
+            position = position_dodge(.75)) +
+  scale_fill_manual(name="",
+                    values=grey.colors(n=3,
+                                       start=0.2,
+                                       end=0.8), labels=c("1st cutting", "2nd cutting", "3rd cutting"),
+                    guide=guide_legend())+
+  labs(y="Relative feed value",
+       x="Timing of first harvest") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,150)) +
+  theme(legend.position = "none",
+        legend.justification = c("left", "top"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10));rfv.gg
+
+# ggsave("rfv.png")
+
+ggarrange(yield.gg, rfv.gg, 
+          ncol = 1, nrow = 2, align = "v")
+ggsave("y.q.gg.png")
+# ggsave("y.q.gg.png",width = 4.85,height = 7,units = "in",
+#                     dpi = 500)
+ggsave("fig2.png",width = 4.85,height = 9,units = "in",
+                    dpi = 500)
+
+```
+
+
+## yield+quality+$~intensity, fig4 --------------------------------------------------
+
+```{r}
+rt.i.gg <- dat3 %>%
+  filter(!is.na(return.total)) %>%
+  mutate(follow.cut = recode(follow.cut,
+                             none = "1",
+                             september = "2",
+                             october = "3")) %>%
+  group_by(follow.cut) %>%
+  summarise(mean=mean(return.total),n=n(),
+            se=sd(return.total)/sqrt(n)) %>%
+  ggplot(aes(follow.cut,mean))+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=0.5) +
+  geom_col()+
+  geom_label(aes(label=c("a","a","b"),
+                 y=mean+se+50),
+             size=6,
+             label.size = NA) +
+  labs(y=expression("Net returns" ~ ("$" ~ ha^{-1}*yr^{-1})),
+       x="Number of harvests per year") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,500)) +
+  theme(legend.position = c(.05, .99),
+        legend.justification = c("left", "top"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10))
+
+y.i.gg <-dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(follow.cut) %>%
+  dplyr::summarise(mean=mean(yield.total),n=n(),
+                   se=sd(yield.total)/sqrt(n)) %>%
+  ggplot(aes(follow.cut,mean))+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=.5) +
+  geom_col()+
+  geom_label(aes(label=c("b","a","a"),
+                 y=mean+se+.5),
+             size=6,
+             label.size = NA) +
+  labs(y=expression("Forage yield" ~ (Mg ~ ha^{-1}*yr^{-1})),
+       x="Harvest intensity") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,6.5))+
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10)) +
+  labs(x="")
+
+q.i.gg <-dat3 %>%
+  group_by(follow.cut) %>%
+  dplyr::summarise(mean=mean(na.omit(RFV.total)),n=n(),
+                   se=std.error(RFV.total,na.rm = T)) %>%
+  ggplot(aes(follow.cut,mean))+
+  geom_errorbar(aes(ymin=mean-se,
+                    ymax=mean+se),
+                width=.5) +
+  geom_col()+
+  # geom_label(aes(label=c("","",""),
+  #                y=mean+se+.5),
+  #            size=6,
+  #            label.size = NA) +
+  labs(y="Relative feed value\n(weighted cumulative)",
+       x="Number of harvests per year") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,110))+
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10)) +
+  labs(x="");q.i.gg
+
+
+ggarrange(y.i.gg, q.i.gg,rt.i.gg, 
+          ncol = 1, nrow = 3, align = "v")
+          # heights = c(9,9,9))
+ggsave("fig4.png")
+ggsave("fig4.png",width = 3.56,height = 7.06,
+       units = "in", dpi = 500)
+
+
+```
+
+## yield.1cut+RFQ.1cut vs GDD, fig 3
+
+```{r}
+gdd.yield <- dat1.y1.df %>%
+  # mutate(yield.1cut=yield.1cut/1000) %>%
+  ggplot(aes(y=yield.1cut, x=gdd.1cut, color=year))+
+  geom_point(aes(shape=year))+
+  geom_smooth(method="lm", se=F, show.legend=F, color="black", formula = y ~ x + I(x^2)) +
+  annotate("text", x = 1500, y = 9.5*1000, 
+           label = expression(paste("Marginal", ~italic(R)^2), ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" = 0.35")) +
+  annotate("text", x = 1540, y =8.5*1000, 
+           label = expression(paste(italic("y = 14.5x - 0.005"), italic(x)^2), ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~italic("- 6673"))) +
+  scale_color_manual(values=grey.colors(n=3,
+                                        start = 0.2,
+                                        end=.8)) +
+  theme_bw() +
+  labs(y=expression("Forage yield" ~ (kg ~ ha^{-1})),
+       x="") +
+  theme(legend.position = c(.05, .96),
+        legend.justification = c("left", "top"),
+        legend.title = element_blank(),
+        axis.title = element_text(size=12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=10));gdd.yield
+
+gdd.rfq <- ggplot(dat1.q1.df, 
+                  aes(y=RFQ.1cut, x=gdd.1cut, color=year))+
+  geom_point(aes(shape=year))+
+  geom_smooth(method="lm", se=F, show.legend=F, formula = y ~ x + I(x^2), color="black") +
+  annotate("text", x = 1500, y = 145, 
+           label = expression(paste("Marginal", ~italic(r)^2), ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" = 0.65")) +
+  annotate("text", x = 1507, y = 135, 
+           label = expression(paste(italic("y = -0.18x + 0.000044"), italic(x)^2), ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~italic("  + 219"))) +
+  scale_color_manual(values=grey.colors(n=3,
+                                        start = 0.2,
+                                        end=.8)) +
+  theme_bw() +
+  labs(y="Relative feed value",
+       x=expression(paste("Growing degree days (", degree, "C d)"))) +
+  theme(
+    legend.position = "none",
+    legend.title = element_blank(),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size=10));gdd.rfq
+
+
+ggarrange(gdd.yield, gdd.rfq, ncol = 1, nrow = 2, align = "v")
+# ggsave("gdd.png")
+ggsave("fig3.png", width = 5.06,height=5.64,
+       units = "in", dpi=500)
+
+```
+
+## RFV.total~timing
+
+```{r}
+q.t.df <- dat1 %>%
+  group_by(timing.1cut) %>%
+  summarise(mean=mean(na.omit(RFV.total)),
+            se=std.error(RFV.total, na.rm = T)) %>%
+  as.data.frame() %>%
+  mutate(tukey=c("a","b","b"))
+```
+
+```{r}
+q.t.df %>%
+  ggplot(aes(timing.1cut,mean)) +
+  geom_errorbar(aes(ymax=mean+se,
+                    ymin=mean-se),
+                width=.4) +
+  geom_col() +
+  geom_text(aes(label=tukey,
+                y=mean+se+8),
+            size=5) +
+  labs(y="Relative feed value\n(weighted cumulative)",
+       x="") +
+  theme_bw() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,130)) +
+  scale_x_discrete(labels = c("Boot","Anthesis","Dough")) +
+  theme(axis.text = element_text(size=10),
+        axis.title = element_text(12))
+
+ggsave("rfv.timing.png")
+ggsave("rfv.timing.png", width = 3.27,height=3,
+       units = "in", dpi=500)
+
+```
+
+
+
+# Stats for abstract
+
+```{r}
+
+mean(dat3$yield.3cut/dat3$yield.total)
+mean(na.omit(dat3$yield.3cut/dat3$yield.total))
+
+dat3 %>%
+  
+  
+  
+```
+
+
+
+```{r}
+dat3 %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(treatment) %>%
+  summarise(mean=mean(na.omit(yield.total)))
+
+```
+
+```{r}
+dat3 %>%
+  group_by(treatment) %>%
+  summarise(mean=mean(na.omit(RFQ.total)))
+
+```
+
+```{r}
+dat3 %>%
+  group_by(treatment) %>%
+  summarise(mean=mean(na.omit(return.total))) %>%
+  arrange(mean)
+
+dat3 %>%
+  summarise(mean=mean(na.omit(return.total))) %>%
+  arrange(mean)
+```
+in 2020, 27.9 million tons of hay were sold in USA
+52.2 million acres of hay were harvested
+average around $100 dollars a ton
+
+around 3 tons an acre for hay/alfalfa
+
+in MN in 2020, there were 740k acres harvested in hay/alfalfa
+This produced 2.66 million tons of forage
+on average, that's ~3.3 tons per acre
+this forage was valued at 346 million
+this averages $130 per ton of forage
+this averages about $430 per acre in sales for forage production
+this averages to $1062 per hectare
+
+for context, corn averages about $2400 an acre in gross revenue
+
+average production we're seeing in about 3 tons an acre
+
+
+
+```{r}
+
+dat3 %>%
+  group_by(follow.cut) %>%
+  summarise(mean=mean(na.omit(return.total))) %>%
+  arrange(mean)
+
+dat3 %>%
+  group_by(follow.cut) %>%
+  summarise(mean=mean(na.omit(yield.total))) %>%
+  arrange(mean)
+
+
+```
+
+
+```{r}
+dat1 %>%
+  filter(field.year=="second") %>%
+  group_by(field.year,follow.cut) %>%
+  summarise(money = mean(return.1cut))
+
+
+anova(lm(return.1cut~follow.cut,dat1))
+anova(lm(return.1cut~follow.cut,subset(dat1,field.year=="second")))
+cld(emmeans(lm(return.1cut~follow.cut,dat1), ~follow.cut))
+
+
+dat1 %>%
+  # filter(field.year=="second") %>%
+  # group_by(timing.1cut) %>%
+  summarise(money = mean(return.1cut),
+            se=std.error(return.1cut))
+
+anova(lm(return.1cut~timing.1cut,dat1))
+anova(lm(return.1cut~timing.1cut,subset(dat1,field.year=="second")))
+cld(emmeans(lm(return.1cut~timing.1cut,subset(dat1,field.year=="second")), ~timing.1cut))
+
+
+```
+
+```{r}
+lmer(return.1cut~follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 dat3)
+```
+
+
+
+```{r}
+dat3
+str(dat3)
+
+dat3 %>%
+  group_by(timing.1cut) %>%
+  summarise(first=mean(na.omit(gdd.2cut)))
+
+dat3 %>%
+  group_by(timing.1cut) %>%
+  summarise(first=mean(na.omit(gdd.3cut)))
+
+```
+
+
+# Harvest intensity effect from year 1 on year 2 .
+
+When the follow-up cut treatments were applied to plots in year 1, did
+this result in differing yields the following year?
+
+## yield.1cut\~follow.cut
+
+Does the forage yield of the first cutting in year 2 differ between
+plots that received different harvest intensities the previous year
+(year 1)?
+
+```{r visualize 1}
+lattice::bwplot(yield.1cut~follow.cut, data=subset(dat1, field.year=="second"))
+# no obvious impact of the follow.cut on the second year
+
+lattice::bwplot(yield.1cut~follow.cut|year, data=subset(dat1, field.year=="second"))
+lattice::bwplot(yield.1cut~follow.cut|env, data=subset(dat1, field.year=="second"))
+# doesn't seem to differ by year or environment
+
+ggplot(subset(dat1, field.year=="second"),
+              aes(x=yield.1cut)) +
+  geom_density()
+#bw plots make all responses look poisson/gamma
+#geom_density further supports using glmer along with lmer
+
+#checking to see if there's an interaction between year and follow.cut
+#first, graph it
+ggplot(subset(dat1, field.year=="second"), 
+       aes(y=yield.1cut, x=follow.cut, group=env, color=env))+
+  geom_point()+
+  geom_smooth(method="lm", 
+              formula=y~x,
+              se=F, show.legend=F)
+#no obvious interaction
+
+```
+
+```{r test 1}
+
+#first, compare glmer and lmer for fit
+summary(glmer(yield.1cut~follow.cut*year +
+                  (1|site/block),
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+
+summary(lmer(yield.1cut~follow.cut*year +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit))
+#glmer failed to converge
+#site/block for random statement is confusing the model
+#remove site from random effect statement
+
+summary(glmer(yield.1cut~follow.cut*year +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+
+summary(glm(yield.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+#glm has AIC of 1227 vs glmer with AIC of 1229
+#let's compare to the lmer and lm
+
+summary(lmer(yield.1cut~follow.cut*year +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit,
+             REML = FALSE))
+
+summary(lm(yield.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit))
+AIC(lm(yield.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit))
+#AIC of 1284 for lm and 1286 for lmer
+#want to stick with the glm and glmer, as we'd expect
+
+car::Anova(glmer(yield.1cut~follow.cut*year +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+
+car::Anova(glm(yield.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                family = gaussian(link="log"),
+                na.action=na.omit))
+#no interaction between follow.cut:year
+#no difference in the second year due to follow.cut treatment
+```
+
+```{r model diagnostics for preferred model}
+m.1 <- glm(yield.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                family = gaussian(link="log"),
+                na.action=na.omit)
+plot(m.1)
+#normality of residual could be improved
+#homoscedasticity could be improved
+```
+
+```{r boxcox of preferred model}
+library(MASS)
+boxcox(m.1) #expand range of x axis to improve viewing
+```
+
+Since 95% confidence interval overlaps with Lambda=0, box-cox
+transformation is unlikely to improve the fit.
+
+```{r}
+car::Anova(m.1)
+```
+
+We conclude that forage yields in the spring in the second field year
+did not differ between plots that recieved follow-up cuts and plots that
+did not.
+
+```{r}
+
+car::Anova(lmer(yield.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(dat1, field.year=="second")))
+
+car::Anova(lmer(RFQ.1cut~timing.1cut*follow.cut +
+                   (1|site/block/timing.1cut) + (1|env),
+                 subset(dat1, field.year=="second")))
+
+cld(emmeans(abst, ~follow.cut))
+
+```
+
+
+
+## yield.2cut\~follow.cut
+
+We only have follow-up forage yield data in the second year for
+R100.2019 and yield.2cut only exists for treatments that had a follow-up
+cut in the fall, so dataset is limited to n=23 to answer this question.
+
+```{r, eval=FALSE}
+subset(dat1, env=="R100.2019")$yield.2cut
+length(subset(dat1, env=="R100.2019")$yield.2cut[!is.na(subset(dat1, env=="R100.2019")$yield.2cut)])
+
+```
+
+```{r}
+lattice::bwplot(yield.2cut~follow.cut, data=subset(dat1, field.year=="second"))
+# no obvious impact of the follow.cut on the second year
+
+ggplot(subset(dat1, field.year=="second"),
+              aes(x=yield.2cut)) +
+  geom_density()
+#bw plots make all responses look gaussian log-link
+#geom_density further supports using glmer along with lmer
+
+summary(glmer(yield.2cut~follow.cut +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                family = gaussian(link="log"),
+                na.action=na.omit))
+
+summary(glm(yield.2cut~follow.cut,
+                data=subset(dat1,field.year=="second"),
+                family = gaussian(link="log"),
+                na.action=na.omit))
+#glm has AIC of 371 vs glmer which is.Singular
+
+m.2 <- glm(yield.2cut~follow.cut,
+                data=subset(dat1,field.year=="second"),
+                family = gaussian(link="log"),
+                na.action=na.omit)
+
+```
+
+```{r diagnostics of preferred model}
+plot(m.2)
+boxcox(m.2)
+#boxcox transformation not necessary
+```
+
+There was no difference among the yield.2cut the following year based on
+whether there was a follow-up cut previously
+
+## yield.total\~follow.cut
+
+When we look at the total yield, we are again basically just looking at
+the R100.2019 environment because there is no difference between
+yield.1cut and yield.total in R70 due to a lack of follow-up cuts in
+2018. However, since yield.total is the sum of all cuts, plots with more
+follow-up cuts (aka greater harvest intensity) are going to have more
+yield.total because its cumulative, so testing the effect of the harvest
+intensity in year 1 on the total yield in year 2 doesn't make sense
+because treatments with greater harvest intensity are going to have
+greater total yield. The only comparisons that could be made are between
+year and those differences could be attributable to a number of factors
+that aren't obviously meaningful.
+
+## conclusion yield
+
+In the second field year, no differences in forage yield were detected
+among the different follow-up cut treatments. This finding is surprising
+since plots without follow-up cuts received a lot more GDD and precip
+prior to their first cut the following year than plots that received a
+follow-up cut in October. Despite a plot being cut multiple times in the
+first year of the experiment, there was no observable difference in its
+forage yield the following year at the first cut and second cut. Though
+it should be acknowledged that since R70.2018 did not receive follow-up
+cuts, we are relying on two environments for yield.1cut conclusion and
+one environment for our yield.2cut conclusion (n=23).
+
+Moving forward in the analysis, there is little reason to believe that
+the follow.cut treatments will have main effects, simple effects or
+interactions with timing.1cut for forage yield. There is also less
+reason to believe that field.year will have an appreciable effect on
+forage yields, though there may still be impacts on RFQ.
+
+## RFQ.1cut\~follow.cut
+
+Does the RFQ in year 2 differ between plots that received different
+harvest intensities in year 1?
+
+```{r}
+lattice::bwplot(RFQ.1cut~follow.cut, data=subset(dat1, field.year=="second"))
+# no obvious impact of the follow.cut on the second year RFQ
+
+lattice::bwplot(RFQ.1cut~follow.cut|year, data=subset(dat1, field.year=="second"))
+lattice::bwplot(RFQ.1cut~follow.cut|env, data=subset(dat1, field.year=="second"))
+# At R70.2018, RFQ.1cut may be higher for plots harvested multiple times in year 1
+
+ggplot(subset(dat1, field.year=="second"),
+              aes(x=RFQ.1cut)) +
+  geom_density() 
+
+ggplot(subset(dat1, field.year=="second"),
+              aes(x=RFQ.1cut)) +
+  geom_density() +
+  facet_wrap(~env)
+#together they're normally distributed
+#if separating, 2019 is more gaussian log-link
+
+#checking to see if there's an interaction between year and follow.cut
+#first, graph it
+ggplot(subset(dat1, field.year=="second"), 
+       aes(y=RFQ.1cut, x=follow.cut, group=env, color=env))+
+  geom_point()+
+  geom_smooth(method="lm", 
+              formula=y~x,
+              se=F, show.legend=F)
+#no obvious interaction
+#both show slight positive trend in RFQ.1cut in year 2 as harvest intensity increases in year 1 
+
+#next we test it using models
+summary(lmer(RFQ.1cut~follow.cut*env +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit,
+             REML = FALSE))
+
+summary(lm(RFQ.1cut~follow.cut*env,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit))
+#lmer is overfitted, use lm
+#no apparent interaction between year and follow.cut
+
+anova(lm(RFQ.1cut~follow.cut*year,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit))
+```
+
+```{r}
+m.4 <- lm(RFQ.1cut~follow.cut*env,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit)
+boxcox(m.4)
+bc <- boxcox(m.4)
+best.lam <- bc$x[which(bc$y==max(bc$y))];best.lam
+
+m.4.bc <- lm(RFQ.1cut^-1.5~follow.cut*env,
+                data=subset(dat1,field.year=="second"),
+                na.action=na.omit)
+plot(m.4.bc)
+plot(m.4)
+#weird, heteroscadasticity seems worse after boxcox transformation
+#let's just see if the conclusions of both models are similar
+```
+
+```{r}
+anova(m.4)
+anova(m.4.bc)
+
+```
+
+no differences in forage quality for the first cut in year 2 among plots
+harvested at different intensities in year 1 We conclude that the
+RFQ.1cut of the second year did not differ depending on whether the
+previous year the plot recieved follow-up cuts.
+
+## RFQ.2cut\~follow.cut
+
+Among plots harvested multiple times in year 2, were there differences
+in the RFQ of the second cut in year 2 among plots harvested 2 vs 3
+times in year 1?
+
+*Note we only have 1 dataset from R100.2019 to work with here*
+
+```{r}
+lattice::bwplot(RFQ.2cut~follow.cut|env, data=subset(dat3, field.year=="second"))
+# no obvious impact of the follow.cut on the second year
+
+
+ggplot(subset(dat1, field.year=="second"),
+              aes(x=RFQ.2cut)) +
+  geom_density()
+#bw plots make all responses look poisson/gamma
+#geom_density further supports using glmer
+
+#first, graph it
+ggplot(subset(dat3, field.year=="second"), 
+       aes(y=RFQ.2cut, x=follow.cut, group=env, color=env))+
+  geom_point()+
+  geom_smooth(method="lm", 
+              formula=y~x,
+              se=F, show.legend=F)
+#slight decreasing in RFQ.2cut in year 2 as harvest intensity increased in year 1
+
+summary(glmer(RFQ.2cut~follow.cut +
+                  (1|block),
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+
+summary(glm(RFQ.2cut~follow.cut,
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+
+car::Anova(glm(RFQ.2cut~follow.cut,
+                data=subset(dat1,field.year=="second"),
+                family = Gamma(link="log"),
+                na.action=na.omit))
+#no difference in the second year due to follow.cut treatment
+
+```
+
+There was no difference among the RFQ.2cut the following year based on
+whether there was a follow-up cut previously
+
+## RFQ.total\~follow.cut
+
+When we look at the total RFQ, we are basically just looking at
+R100.2019 because there is no difference between RFQ.1cut and RFQ.total
+in R70 due to a lack of follow-up cuts in 2018.
+
+Also important to remember that RFQ.total is sum of the RFQ of each
+cutting that year **weighted** by their percent contribution to the
+total dry matter yield for that plot for that year. In other words, if
+all the forage harvested from each plot over a year was put in its own
+respective pile (plot 101 has a pile, plot 102 has a pile etc; if a plot
+has one harvest than its pile consists of 1 harvest and if a plot has 3
+harvests its plot consists of 3 harvests), RFQ.total is the RFQ for that
+pile.
+
+So here we're looking at the piles for each plot in year 2 and we're
+curious if the harvest intensity in year 1 resulted in different
+RFQ.totals in year 2.
+
+It's unclear how to answer this question with a statistical test because
+in year 1 plots are harvested at different intensities, and this impacts
+the RFQ of the first cut in year 2 and the second cut in year 2, and the
+RFQ.total in year 2 is comprised of both of those cuttings.
+
+```{r}
+
+
+```
+
+```{r}
+lattice::bwplot(RFQ.total~follow.cut, data=subset(dat1, env=="R100.2019" ))
+# may be an impact of the follow.cut on the second year
+
+ggplot(subset(dat1, env=="R100.2019"),
+              aes(x=RFQ.total)) +
+  geom_density()
+#bw plots make all responses look normal
+#geom_density makes responses look normal
+
+#checking to see how different slope looks vs zero. 
+#first, graph it
+ggplot(subset(dat1, env=="R100.2019"), 
+       aes(y=RFQ.total, x=follow.cut, group=env, color=env))+
+  geom_point()+
+  geom_smooth(method="lm", 
+              formula=y~x,
+              se=F, show.legend=F)
+#positive trend in RFQ.total in second year based on harvest intensity in year 1 and 2
+
+summary(lmer(RFQ.total~follow.cut +
+                  (1|block),
+                data=subset(dat1,env=="R100.2019"),
+                na.action=na.omit,
+             REML = FALSE))
+summary(lm(RFQ.total~follow.cut,
+                data=subset(dat1,env=="R100.2019"),
+                na.action=na.omit))
+#lmer is overfit, prefer lm
+
+```
+
+```{r boxcox}
+m.5 <- lm(RFQ.total~follow.cut,
+                data=subset(dat1,env=="R100.2019"),
+                na.action=na.omit)
+plot(m.5)
+boxcox(m.5, lambda = seq(-5,5))
+```
+
+```{r}
+anova(m.5)
+#no difference of harvest intensity
+
+car::Anova(lmer(RFQ.total~follow.cut +
+                  (1|block),
+                data=subset(dat1,env=="R100.2019"),
+                na.action=na.omit,
+             REML = FALSE))
+#running lmer just cause I want a second opinion
+#no difference of harvest intensity with lmer
+```
+
+No differences are detected in the RFQ.total of the second year from the
+impact of harvest intensity in year 1 and year 2.
+
+## conclusion
+
+We expect the RFQ to increase with harvest intensity, but were unsure if
+the impact of cutting plots in year 1 different amount of times would
+impact the RFQ in the following year. With a limited dataset of only one
+site, we did not detect any differences in RFQ in the second year based
+on the frequency of harvests that plot experienced in year 1 and year 2.
+
+We can feel relatively confident that if differences in forage yield and
+quality did occur in year 2, they were not due to harvest intensity in
+year 1.
+
+# Harvest intensity effect combined across years
+
+Since we are relatively confident that year 1 harvest intensity did not
+impact year 2 forage yield and quality, here we combine our forage yield
+and quality data across both years to look more closely at how forage
+yield and quality are responding to different follow-up cut schedules.
+
+## proportion graphs
+
+First we visualize the proportional contribution each follow-up cutting
+to the total yield and quality of a plot
+
+### Yield.total
+
+Of the total yield, what is the proportional contribution of the
+follow-up cuts to the final yield?
+
+```{r}
+dat2 <- dat3
+dat2$yield.1cut <- dat3$yield.1cut
+dat2$yield.2cut <- dat3$yield.1cut+dat3$yield.2cut
+dat2$yield.3cut <- dat3$yield.1cut+dat3$yield.2cut+dat3$yield.3cut
+dat2.long <- reshape2::melt(data = dat2, id.vars = c("follow.cut"), measure.vars = c("yield.3cut", "yield.2cut","yield.1cut"))
+
+dat2.long <- dat2.long %>%
+  mutate(variable = recode(variable,
+             yield.3cut = "October cut",
+             yield.2cut = "September cut",
+             yield.1cut = "Spring cut")) %>%
+  mutate(follow.cut = recode(follow.cut,
+             october = "september\n    +        \noctober  "))
+
+
+ggplot(data=dat2.long,
+       aes(x=follow.cut, 
+           y=value, 
+           fill=variable, color=variable)) +
+      geom_bar(stat="summary",
+               fun="mean",
+               position ="identity") +
+  labs(y="Cumulative Mean Total Forage Yield \n(kg ha-1 yr-1)",
+       x="",
+       fill="",
+       color="") +
+  coord_flip() #+
+  # theme(axis.title.y =element_text(angle=360, vjust = .65, hjust=1),
+  #       axis.text.y = element_blank()) 
+
+```
+
+The spring cut provides the bulk of the total forage yield
+
+is the total forage yield (the farthest each bar pushes on the x axis)
+differing by the follow.cut? It seems like none is a lot lower
+
+
+While logically and visually it seems that the follow-up cuts would
+increase the total yield at the end of the season, the effect size of
+that contribution is so small and the variation around the mean yield
+total is so large that we cannot reject the null hypothesis that the end
+of year means differ depending on how many harvests occur during the
+year
+
+This is likely due to a lack of statistical power, but a noteworthy
+conclusion of our data
+
+### RFQ.total
+
+If all the forage from a plot over the course of a growing season was
+mixed together before selling, what would be its RFQ and to what extent
+did each harvest contribute to that RFQ?
+
+```{r}
+dat5 <- dat3
+dat5$RFQ.1cut.wt <- dat3$RFQ.1cut.wt
+dat5$RFQ.2cut.wt <- dat3$RFQ.1cut.wt+dat3$RFQ.2cut.wt
+dat5$RFQ.3cut.wt <- dat3$RFQ.1cut.wt+dat3$RFQ.2cut.wt+dat3$RFQ.3cut.wt
+dat5.long <- reshape2::melt(data = dat5, id.vars = c("follow.cut"), measure.vars = c("RFQ.3cut.wt", "RFQ.2cut.wt","RFQ.1cut.wt"))
+
+dat5.long <- dat5.long %>%
+  mutate(variable = recode(variable,
+             RFQ.3cut.wt = "October cut",
+             RFQ.2cut.wt = "September cut",
+             RFQ.1cut.wt = "Spring cut")) %>%
+  mutate(follow.cut = recode(follow.cut,
+             october = "september\n    +        \noctober  "))
+
+
+ggplot(data=dat5.long,
+       aes(x=follow.cut, 
+           y=value, 
+           fill=variable, color=variable)) +
+      geom_bar(stat="summary",
+               fun="mean",
+               position ="identity") +
+  labs(y="Relative Forage Quality",
+       x="",
+       fill="",
+       color="") +
+  coord_flip() #+
+  # theme(axis.title.y =element_text(angle=360, vjust = .65, hjust=1),
+  #       axis.text.y = element_blank()) 
+
+```
+
+Here we see that the end of year RFQ really didn't differ between plots
+harvested once vs. multiple times. It also further supports that the
+spring cut is really driving the response of RFQ. This makes sense since
+these RFQ values are weighted by the contribution to the total dry
+matter forage at the end of the year. We already knew that the majority
+of the forage yield at the end of the year was comprised of the spring
+cut, this graph shows that the RFQ of those follow-up cuts probably
+wasn't that different from the spring cut. If the september cut had
+twice the RFQ of the spring cut, for example, it wouldv'e been able to
+overcome the fact that it's overall contribution to forage dry matter
+was small and result in a longer bar
+
+no differences in end of year RFQ detected, as expected
+
+Now while we expect the differences in RFQ to be small between follow-up
+cuts based on the previous preportion graph, how big were these
+differences?
+
+```{r}
+
+dat1.long <- reshape2::melt(data = dat3, id.vars = c("follow.cut"), measure.vars = c("RFQ.3cut", "RFQ.2cut","RFQ.1cut"))
+
+dat1.long <- dat1.long %>%
+  mutate(variable = recode(variable,
+             RFQ.1cut = "Spring cut",
+             RFQ.2cut = "September cut",
+             RFQ.3cut = "October cut")) %>%
+  mutate(follow.cut = recode(follow.cut,
+             october = "september\n+\noctober"))
+
+
+ggplot(data=dat1.long,
+       aes(x=follow.cut, 
+           y=value, 
+           fill=variable, color=variable)) +
+      geom_bar(stat="summary",
+               fun="mean",
+               position ="dodge") +
+  labs(y="Average Relative Forage Quality",
+       x="Follow-Up Cuts",
+       fill="",
+       color="") +
+  theme_classic()
+
+```
+
+Ok, so it seems the spring cuts hovered around an RFQ of 90, the
+September cuts had an RFQ around 110 and the october cuts had an rfq
+around 100.
+
+
+The only way we can really compare the RFQ of the spring cut vs. sep cut
+vs. oct cut is by using the data from the plots that got harvested 3
+times (follow.cut=="october").
+
+#### RFQ between different cuts
+
+So here we look at all the plots that got harvested 3 times and compare
+the RFQ of the harvests. Does the spring harvest differ from the
+September harvest in RFQ?
+
+```{r wide to long format}
+dat4 <- subset(dat3, follow.cut=="october")
+dat4.long <- reshape2::melt(data = dat4, id.vars = c("follow.cut","site","block","env"), measure.vars = c("RFQ.1cut", "RFQ.2cut","RFQ.3cut"))
+```
+
+```{r n counts, eval=FALSE}
+length(subset(dat3, follow.cut=="october")$RFQ.3cut[!is.na(subset(dat3, follow.cut=="october")$RFQ.3cut)])
+length(subset(dat3, follow.cut=="october")$RFQ.2cut[!is.na(subset(dat3, follow.cut=="october")$RFQ.2cut)])
+length(subset(dat3, follow.cut=="october")$RFQ.1cut[!is.na(subset(dat3, follow.cut=="october")$RFQ.1cut)])
+35*2+34
+
+```
+
+```{r visualize}
+lattice::bwplot(value~variable, dat4.long)
+# looks gaussian-log and the RFQ.2cut might have the highest forage quality
+ggplot(dat4.long)+
+  geom_density(aes(x=value))
+#lets do glm/glmer
+```
+
+```{r model selection}
+summary(glmer(value~variable+
+                   (1|env)+
+                   (1|site:block),
+           data=dat4.long,
+      family=gaussian(link="log")))
+#site:block doesn't help
+
+summary(glmer(value~variable+
+                   (1|env),
+           data=dat4.long,
+      family=gaussian(link="log")))
+
+summary(glm(value~variable,
+           data=dat4.long,
+      family=gaussian(link="log")))
+
+##glmer is best
+
+m.3 <- glmer(value~variable+
+                   (1|env),
+           data=dat4.long,
+      family=gaussian(link="log"))
+```
+
+```{r means testing, echo=TRUE}
+car::Anova(m.3)
+cld(emmeans(m.3,~variable))
+```
+
+```{r figure; RFQ~intensity}
+library(tidyr)
+dat4.long.tidy <- dat4.long %>%
+  group_by(variable) %>%
+  drop_na(value) %>%
+  summarise(n=n(), mean=mean(value), 
+            se=sd(value)/sqrt(n)) %>%
+  as.data.frame() %>%
+  mutate(tukey = c("c","a","b"))
+
+
+ggplot(dat4.long.tidy, aes(x=variable, y=mean)) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), 
+                width=0.3,
+                alpha=1,
+                size=1) +
+  geom_bar(stat = "identity", width=0.7) +
+  geom_text(aes(label=tukey,
+                y=mean+se),
+            vjust=-.4,
+            size=8) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 150)) + #adjust for y-axis range
+  theme_classic() +
+  labs(y="RFQ",
+       x="",
+       title="",
+       caption="among the three environments and plots that recieved 3 cuttings, how did cuts differ in RFQ?\n n=35")
+```
+
+# Tale of 3-cut < 2-cut in cumulative yields
+At Craig's request
+
+```{r}
+
+dat3 %>%
+  mutate(yield.total=yield.total/1000) %>%
+  ggplot(aes(follow.cut,yield.total)) +
+  stat_summary(geom = "pointrange")
+
+dat1 %>%
+  mutate(yield.total=yield.total/1000) %>%
+  ggplot(aes(follow.cut,yield.total)) +
+  stat_summary(geom = "pointrange")
+
+dat %>%
+  mutate(yield.total=yield.total/1000) %>%
+  ggplot(aes(follow.cut,yield.total)) +
+  stat_summary(geom = "pointrange")
+
+dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(follow.cut) %>%
+  dplyr::summarise(mean=mean(yield.total),n=n(),
+                   se=sd(yield.total)/sqrt(n))
+#shouldn't go down from 2cut to 3cut in cumulative, but it does
+
+dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::summarise(mean=mean(yield.total),n=n(),
+                   se=sd(yield.total)/sqrt(n))
+#occurs both for boot and dough
+
+dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total.old=yield.total.old/1000) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::summarise(mean=mean(yield.total.old),n=n(),
+                   se=sd(yield.total.old)/sqrt(n))
+#means are identical both for yield.total.old and yield.total
+
+
+dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  ggplot(aes(follow.cut,yield.total)) +
+  geom_jitter(width=.2) +
+  geom_boxplot(alpha=0.1,width=.5)
+
+
+
+dat3 %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  dplyr::select(id,env,treatment,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  View()
+#ID 164 fails to drag down sep
+
+dat3 %>%
+  mutate(yield.total.old=yield.total.old/1000) %>%
+  ggplot(aes(follow.cut,yield.total.old)) +
+  stat_summary(geom = "pointrange")
+#still not equal
+
+dat3 %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  dplyr::summarise(with164=mean(yield.total.old),
+                   without164=mean(na.omit(yield.total)))
+#still not explaining difference
+
+dat3 %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  group_by(env) %>%
+  tally()
+# environments aproximtely equal
+
+dat3 %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  dplyr::select(id,env,treatment,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  group_by(treatment) %>%
+  dplyr::summarise(y1=mean(yield.1cut),
+                   y2=mean(na.omit(yield.2cut)),
+                   y3=mean(yield.3cut),
+                   yall=mean(na.omit(yield.total)))
+
+dat3 %>%
+  dplyr::filter(timing.1cut=="boot") %>%
+  dplyr::select(id,env,treatment,field.year,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  group_by(field.year,treatment) %>%
+  dplyr::summarise(y1=mean(yield.1cut),
+                   y2=mean(na.omit(yield.2cut)),
+                   y3=mean(yield.3cut),
+                   yall=mean(na.omit(yield.total)))
+#yield 3 cuts add nothing. first cuts makes up most and 3-cut just has lowest
+
+
+dat3 %>%
+  dplyr::filter(timing.1cut=="dough") %>%
+  dplyr::select(id,env,treatment,field.year,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  group_by(field.year,treatment) %>%
+  dplyr::summarise(y1=mean(yield.1cut),
+                   y2=mean(na.omit(yield.2cut)),
+                   y3=mean(yield.3cut),
+                   yall=mean(na.omit(yield.total)))
+# yield 3 cut still adds nothing, yield 1 cut still lags in first and especially second year
+
+
+dat3 %>%
+  dplyr::filter(timing.1cut=="dough") %>%
+  dplyr::select(id,env,treatment,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  View()
+#ID=107 drags down dough
+
+dat3 %>%
+  dplyr::filter(id!=164) %>%
+  mutate(yield.total=yield.total/1000) %>%
+  group_by(timing.1cut,follow.cut) %>%
+  dplyr::select(treatment,yield.total) %>%
+  View()
+
+dat3 %>%
+  mutate(yield.total=yield.total/1000) %>%
+  ggplot(aes(timing.1cut,yield.total,
+             group=follow.cut,
+             fill=follow.cut)) +
+  stat_summary(geom = "bar",
+               position = position_dodge(.5),
+               width=.5) +
+  stat_summary(geom = "errorbar",
+               position = position_dodge(.5),
+               width=0) +
+  facet_wrap(~env)
+# what's going on in R70.2017 at boot?
+
+dat3 %>%
+  dplyr::filter(env=="R70.2017") %>%
+  ggplot() +
+  geom_boxplot(aes(timing.1cut,yield.total))
+# no datapoints meet criteria for outliers
+
+```
+
+
+
+# Review of experiment
+
+Over 3 sites locations and 3 years, we selected two consecutive years of
+data for two sites. The R70 site was planted in the fall of 2015 and we
+collected data for 2017 and 2018. The R100 site was planted in 2016 and
+we collected data in 2018 and 2019. As a result, both sites had data
+collected when the IWG was in its second year of production and the
+following year when it was in its third year of production. Both sites
+were also located about 0.25 kilometers apart and on the same soil type
+(Tallula silt loam with very good drainage and water storage capacity).
+
+In 2017, there was average precipitation and faster GDD accumulation in
+the early part of the summer. In 2018 there was slower GDD accumulation
+and less precipitation during June. In 2019 there was average GDD
+accumulation and above average rainfall.
+
+We expected to observe a well known trend, as more GDD accumulated,
+forage yield would increase and as forage yield increased the forage
+quality would decrease. Our question was how forage yield and quality
+were impacted based on the timing of our first forage cut and/or whether
+we performed follow up cuts later in the season. Ultimately, we wanted
+to combine forage yield and quality data to get an estimate of how much
+\$ per hectare could be expected for different combinations of first cut
+timing and follow-up cut and identify the most profitable system for IWG
+as a forage.
+
+# Methods for analysis
+
+# Key conclusions
