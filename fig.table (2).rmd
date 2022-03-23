@@ -1,0 +1,617 @@
+---
+title: "FIG table"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, nlme, lsmeans, lme4, multcomp,multcompView,
+               googlesheets4, googledrive, lubridate, reshape2,tidyr)
+
+# if (!require("pacman")) install.packages("pacman")
+# pacman::p_load(tidyverse, nlme, lsmeans, lme4, multcomp, multcompView,
+#                googlesheets4, googledrive, lubridate, reshape2, plotrix)
+
+options(scipen=999) #reduce scientific notation 
+options(digits=4)   # only print 4 sig figs
+# options(device = "windows")
+```
+
+```{r import+tidy, include=FALSE, cache=TRUE}
+
+driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
+ 
+dat<-read_sheet(driveurl,gs4_deauth())
+
+weatherurl<-"https://docs.google.com/spreadsheets/d/1I-kHBXThb0VSwOgRF6ZwiyOtC9-BwCtsKVl7_Z7-XXs/edit#gid=0"
+
+weather<-read_sheet(weatherurl, gs4_deauth())
+
+rm(driveurl, weatherurl)
+
+library(dplyr)
+dat<-dat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+dat$timing.1cut <- factor(dat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+dat$follow.cut <- factor(dat$follow.cut, levels = c("none", "september", "october"))
+dat$site <- factor(dat$site, levels = c("I2", "R70", "R100"))
+dat$treatment <- factor(dat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+#for total yield comparisons
+dat$yield.total.old <- rowSums(dat[,c("yield.1cut","yield.2cut","yield.3cut")], na.rm=T)
+# ^above method inaccurately calculated yield totals by including rows with NAs, all those rows must be dropped!
+
+oct <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,yield.1cut,yield.2cut,yield.3cut) %>%
+  drop_na() %>%
+  pull(id)
+
+sep <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,yield.1cut,yield.2cut) %>%
+  drop_na() %>%
+  pull(id)
+
+none <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,yield.1cut) %>%
+  drop_na() %>%
+  pull(id)
+
+goodid <- c(oct,sep,none)
+
+datyt <- dat %>%
+  filter(dat$id %in% goodid) %>%
+  rowwise() %>%
+  replace_na(list(yield.1cut=0,yield.2cut=0,yield.3cut=0)) %>%
+  transmute(id=id,
+           yield.total=sum(c(yield.1cut,yield.2cut,yield.3cut)))
+
+dat <- dplyr::left_join(dat,datyt,by="id")
+rm(none,oct,sep,datyt)
+# This method has computed a yield.total ONLY for rows without missing data
+
+
+#for forage quality comparisons 
+#First cut
+DM<-dat$dry.matter.1cut
+CP<-dat$protein.1cut
+NDF<-dat$NDF.1cut
+NDFD<-dat$NDFD48.1cut
+ADF<-dat$ADF.1cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.1cut<-DMI*TDN/1.23
+dat$RFV.1cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+# How are NAs handled?
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v1 <- dat %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.1cut,protein.1cut) %>%
+#   arrange(dry.matter.1cut);view(v1)
+# rm(v1)
+# ^ all NAs are from grain cuts which get removed anyways, so not concerned since it's not part of working dataset
+
+
+#Second cut
+DM<-dat$dry.matter.2cut
+CP<-dat$protein.2cut
+NDF<-dat$NDF.2cut
+NDFD<-dat$NDFD48.2cut
+ADF<-dat$ADF.2cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.2cut<-DMI*TDN/1.23
+dat$RFV.2cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v2 <- dat3 %>%
+#   filter(follow.cut!="none") %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.2cut,protein.2cut) %>%
+#   arrange(dry.matter.2cut);view(v2)
+# # ^ id=179 has missing data
+# rm(v2)
+
+dat %>%
+  filter(id==179)
+# ^ but that missing data does not results in an NA for that row for the RFQ calculation, so no issue in working dataset
+
+#Third cut
+DM<-dat$dry.matter.3cut
+CP<-dat$protein.3cut
+NDF<-dat$NDF.3cut
+NDFD<-dat$NDFD48.3cut
+ADF<-dat$ADF.3cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.3cut<-DMI*TDN/1.23
+dat$RFV.3cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+
+#weighting the RFQ and RFV by their proportion of the final total forage for a plot
+dat$RFQ.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFQ.1cut 
+dat$RFQ.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFQ.2cut 
+dat$RFQ.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFQ.3cut 
+dat$RFQ.total.old <- rowSums(dat[,c("RFQ.1cut.wt","RFQ.2cut.wt","RFQ.3cut.wt")], na.rm=T)
+# ^LIKELY SAME ISSUE WITH YIELD IS OCCURRING HERE
+# the computed stats like RFQ and RFV and yield.3cut are fine because they preserve NA
+# problem is with rowSums simply skipping NAs rather than dropping the whole row if there's a missing datapoint
+
+sum(is.na(dat$RFQ.1cut.wt))
+sum(is.na(dat$RFQ.2cut.wt))
+sum(is.na(dat$RFQ.3cut.wt))
+
+octq <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+sepq <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+noneq <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,RFQ.1cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidq <- c(octq,sepq,noneq)
+
+datqt <- dat %>%
+  filter(dat$id %in% goodidq) %>%
+  rowwise() %>%
+  replace_na(list(RFQ.1cut.wt=0,RFQ.2cut.wt=0,RFQ.3cut.wt=0)) %>%
+  transmute(id=id,
+           RFQ.total=sum(c(RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datqt,by="id")
+rm(noneq,octq,sepq,datqt)
+
+# RFQ.total values that equaled zero are due to observations where forage quality data existed but yield data did not, resulting in an unknown weighted forage quality response, so it's recorded as NA in the dataset
+
+dat$RFV.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFV.1cut 
+dat$RFV.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFV.2cut 
+dat$RFV.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFV.3cut
+dat$RFV.total.old <- rowSums(dat[,c("RFV.1cut.wt","RFV.2cut.wt","RFV.3cut.wt")], na.rm=T)
+# STILL NEED TO FIX ROWsUMS FOR RFV AND RETURN TOTAL
+
+sum(is.na(dat$RFV.1cut.wt))
+sum(is.na(dat$RFV.2cut.wt))
+sum(is.na(dat$RFV.3cut.wt))
+# RFV NAs are identical to RFQ NAs, but to reduce liklihood of errors we'll reuse the same code but for RFV
+
+octv <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+sepv <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+nonev <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,RFV.1cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidv <- c(octv,sepv,nonev)
+
+datv <- dat %>%
+  filter(dat$id %in% goodidv) %>%
+  rowwise() %>%
+  replace_na(list(RFV.1cut.wt=0,RFV.2cut.wt=0,RFV.3cut.wt=0)) %>%
+  transmute(id=id,
+           RFV.total=sum(c(RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datv,by="id")
+rm(octv,sepv,nonev,datv)
+
+
+#incorporating $$$ using Hunter et al.
+#Value of the hay in $ per kg
+dat$value.1cut<-34+1.02*dat$RFV.1cut
+dat$value.2cut<-34+1.02*dat$RFV.2cut
+dat$value.3cut<-34+1.02*dat$RFV.3cut
+
+#Economic net economic return in $ per ha
+#subtracts cost of harvest ($143.06 per ha)
+dat$return.1cut<-dat$value.1cut*dat$yield.1cut*0.001-143.06
+dat$return.2cut<-dat$value.2cut*dat$yield.2cut*0.001-143.06
+dat$return.3cut<-dat$value.3cut*dat$yield.3cut*0.001-143.06
+dat$return.total.old<-rowSums(dat[,c("return.1cut","return.2cut","return.3cut")], na.rm=T)
+
+octr <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,return.1cut,return.2cut,return.3cut) %>%
+  drop_na() %>%
+  pull(id)
+
+sepr <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,return.1cut,return.2cut) %>%
+  drop_na() %>%
+  pull(id)
+
+noner <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,return.1cut) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidr <- c(octr,sepr,noner)
+
+datr <- dat %>%
+  filter(dat$id %in% goodidr) %>%
+  rowwise() %>%
+  replace_na(list(return.1cut=0,return.2cut=0,return.3cut=0)) %>%
+  transmute(id=id,
+           return.total=sum(c(return.1cut,return.2cut,return.3cut))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datr,by="id")
+rm(octr,sepr,noner,datr)
+# ^ this removed multiple ID's where a return.total was incorrectly calculated from a plot that had missing data at one of the cuts
+
+# rm(goodidq,goodidr,goodidv)
+rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
+
+weather1 <- weather %>%
+  mutate_at("year", as.factor) %>%
+  mutate(year = recode_factor(year,
+                      `30` = "30 year average"))
+```
+
+```{r working datasets+outlier removal, include=FALSE}
+ 
+dat1 <- dat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+#for response variables ending in .1cut
+
+dat3 <- dat %>%
+  filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain") 
+# for response variables ending in .2cut or .3cut
+
+# The dat1 and dat3 datasets may still contain an occasional missing value depending on the response variable being examined (see below example with yield), but those missing values will be ignored as NAs during analysis and graphing
+
+# example of dat3 with a missing yield observation
+dat3yield <- dat %>%
+  filter(dat$id %in% goodid) %>%
+  filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain")
+
+overlap <- dplyr::left_join(dat3,dat3yield,by="id")
+
+overlap %>%
+  dplyr::select(id,env.x,env.y,yield.total.x,yield.total.y) %>%
+  arrange(yield.total.y)
+# ^ id 164 has missing data for a yield cut and should therefore be removed for yield.total
+
+dat3 %>%
+  filter(id==164) %>%
+  dplyr::select(id,follow.cut,yield.1cut,yield.2cut,yield.3cut,yield.total)
+# if comparing among yield.2cut values, the dat3 dataset still has a missing value, but this is not a problem for the analysis, it's just an example of how our working datasets still may contain missing observations 
+
+rm(dat3yield,overlap)
+
+#outlier removal
+
+dat1.y1.out1 <- dat1 %>%
+  filter(env=="R100.2019"&yield.1cut>10000) %>%
+  dplyr::select(id,yield.1cut) %>%
+  pull(id)
+dat1.y1.out2 <- dat1 %>%
+  filter(env=="R70.2017"&yield.1cut>6000) %>%
+  dplyr::select(id,yield.1cut) %>%
+  pull(id)
+dat1.y1.out <- c(dat1.y1.out1,dat1.y1.out2)
+rm(dat1.y1.out1,dat1.y1.out2)
+
+dat1.q1.out <- dat1 %>%
+  filter(env=="R70.2017"&RFQ.1cut>160) %>%
+  dplyr::select(id,RFQ.1cut) %>%
+  pull(id)
+
+dat %>%
+  filter(env=="R100.2019") %>%
+  dplyr::select(id,plot,yield.1cut) %>%
+  arrange(yield.1cut)
+
+dat1.y1.out <- c(dat1.y1.out,107)
+
+
+
+```
+
+# Run code above
+```{r}
+
+```
+
+
+# demo of code
+
+```{r, include=FALSE}
+
+# standard error
+
+library(dplyr)
+library(plotrix)
+dat1 %>% 
+mutate(yield.1cut=yield.1cut/1000)%>%
+   group_by(timing.1cut,follow.cut) %>% 
+  summarise(across(water.1cut:NDFD48.1cut,function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(x),digits=2))})) %>%
+  print(n=Inf,width=100)
+
+#standard deviation
+
+dat3 %>% 
+mutate(yield.2cut=yield.2cut/1000)%>%
+   group_by(timing.1cut,follow.cut) %>% 
+  summarise(across(water.2cut:NDFD48.2cut,function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(sd(na.omit(x)),digits=2))})) %>%
+  print(n=Inf,width=100)
+
+```
+
+
+# Mean+SE, grouping=timing
+
+
+```{r 1st cut, echo=F,results='asis'}
+t1cut <- dat1 %>% 
+  mutate(yield.1cut=yield.1cut/1000)%>%
+  group_by(timing.1cut) %>% 
+  summarise(across(c(yield.1cut,RFQ.1cut,RFV.1cut,protein.1cut:NDFD48.1cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(x),digits=2))}))
+
+
+library(knitr)
+kable(t1cut)
+
+```
+
+
+```{r 2nd cut, echo=F,results='asis'}
+t2cut <- dat3 %>% 
+  mutate(yield.2cut=yield.2cut/1000,
+         yield.3cut=yield.3cut/1000)%>%
+  group_by(timing.1cut) %>% 
+  summarise(across(c(yield.2cut,RFQ.2cut,RFV.2cut,protein.2cut:NDFD48.2cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(na.omit(x)),digits=2))}))
+
+kable(t2cut)
+
+```
+
+
+```{r 3rd cut, echo=F,results='asis'}
+t3cut <- dat3 %>% 
+  mutate(yield.2cut=yield.2cut/1000,
+         yield.3cut=yield.3cut/1000)%>%
+  group_by(timing.1cut) %>% 
+  summarise(across(c(yield.3cut,RFQ.3cut,RFV.3cut,protein.3cut:NDFD48.3cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(na.omit(x)),digits=2))}))
+
+
+kable(t3cut)
+
+
+```
+
+
+# Mean+SE, grouping=intensity
+^Didn't end up using this grouping
+
+```{r intensity 1st cut, echo=F,results='asis'}
+i1cut <- dat1 %>% 
+  mutate(yield.1cut=yield.1cut/1000)%>%
+  group_by(follow.cut) %>% 
+  summarise(across(c(yield.1cut,RFQ.1cut,RFV.1cut,protein.1cut:NDFD48.1cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(x),digits=2))}))
+
+library(knitr)
+kable(i1cut)
+
+```
+
+
+```{r intensity 2nd cut, echo=F,results='asis'}
+i2cut <- dat3 %>% 
+  mutate(yield.2cut=yield.2cut/1000,
+         yield.3cut=yield.3cut/1000)%>%
+  group_by(follow.cut) %>% 
+  summarise(across(c(yield.2cut,RFQ.2cut,RFV.2cut,protein.2cut:NDFD48.2cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(na.omit(x)),digits=2))}))
+
+kable(i2cut)
+
+```
+
+
+```{r intensity 3rd cut, echo=F,results='asis'}
+i3cut <- dat3 %>% 
+  mutate(yield.2cut=yield.2cut/1000,
+         yield.3cut=yield.3cut/1000)%>%
+  group_by(follow.cut) %>% 
+  summarise(across(c(yield.3cut,RFQ.3cut,RFV.3cut,protein.3cut:NDFD48.3cut),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(na.omit(x)),digits=2))}))
+
+kable(i3cut)
+
+
+```
+
+
+# Mean + SE, yield total
+
+```{r}
+t1 <- dat3 %>%
+  dplyr::filter(timing.1cut=="dough"|timing.1cut=="boot") %>%
+  dplyr::select(id,env,treatment,timing.1cut,follow.cut,field.year,yield.1cut,yield.2cut,
+                yield.3cut,yield.total.old,yield.total) %>%
+  group_by(timing.1cut,field.year,follow.cut) %>%
+  summarise(across(c(yield.1cut,yield.2cut,yield.3cut,yield.total),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(na.omit(x)),digits=2))}))
+
+kable(t1)
+```
+
+
+# Table for Craig 11/3
+Need a table that does not have yield and does have mean separation for Protein and NDF
+
+```{r}
+
+driveurl<-"https://docs.google.com/spreadsheets/d/1sRbJgHVK8YPWsqQXDi8jhn5P1qeqs1bfm0vvR4k-wC8/edit#gid=2030086613"
+
+tdat<-read_sheet(driveurl,gs4_deauth())
+
+library(dplyr)
+tdat<-tdat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
+tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
+tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+# Forage quality
+
+DM<-tdat$dry.matter
+CP<-tdat$protein
+NDF<-tdat$NDF
+NDFD<-tdat$NDFD48
+ADF<-tdat$ADF
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+tdat$RFQ<-DMI*TDN/1.23
+tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#outlier elimination still required.
+
+#we will at least eliminate I2
+
+tdat <- tdat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+
+
+```
+
+
+
+```{r}
+library(plotrix)
+t1 <- tdat %>% 
+  mutate(yield=yield/1000)%>%
+  group_by(timing.1cut,xcut) %>% 
+  summarise(across(c(yield,RFQ,RFV,protein:NDFD48),function(x) {
+    paste(format(mean(na.omit(x)),digits=2),"\u00b1", format(std.error(x),digits=2))}))
+
+
+library(knitr)
+kable(t1)
+
+```
+
+```{r}
+t2 <- tdat %>% 
+  mutate(yield=yield/1000)%>%
+  group_by(xcut,timing.1cut) %>% 
+  summarise(across(c(yield,RFQ,RFV,protein:NDFD48),function(x) {
+    paste(format(mean(na.omit(x)),digits=2))}))
+
+
+library(knitr)
+kable(t2)
+```
+
+
+```{r}
+
+# converting from percent to g/kg 
+t3 <- tdat %>% 
+  mutate(yield=yield/1000)%>%
+  group_by(timing.1cut,xcut) %>% 
+  summarise(across(c(protein:NDFD48),function(x) {
+    paste(format(round(mean(na.omit(x)*10),1),nsmall=1))}))
+t4 <- tdat %>% 
+  mutate(yield=yield/1000)%>%
+  group_by(timing.1cut,xcut) %>% 
+  summarise(across(c(RFV),function(x) {
+    paste(format(round(mean(na.omit(x)),0),nsmall=0))}))
+
+# format(round(x, 2), nsmall = 2)
+
+t3<- left_join(t3,t4)
+
+kable(t3)
+write.csv(t3)
+
+```
+
