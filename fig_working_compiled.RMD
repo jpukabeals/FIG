@@ -35,8 +35,11 @@ options(digits=4)   # only print 4 sig figs
 
 ```{r import+tidy OLD, include=FALSE, cache=TRUE}
 
-dat <- read.csv("FIG_data - Sheet1.csv")
-weather<- read.csv("FIG_weather - Sheet1.csv")
+source("fig_import-data.R")
+
+
+# dat <- read.csv("FIG_data - Sheet1.csv")
+# weather<- read.csv("FIG_weather - Sheet1.csv")
 
 # driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
 #  
