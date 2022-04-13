@@ -5,7 +5,16 @@ rm(list=ls())
 library(tidyverse)
 
 
+<<<<<<< HEAD
 # wide format - forage yield and quality ----------------------------------
+=======
+# weather -----------------------------------------------------------------
+
+weather <- read.csv("fig_weather.csv")
+
+
+# forage yield and quality data -------------------------------------------
+>>>>>>> 59e5fe208efa73ed653d84fa4aa6c5747f75e90a
 
 
 ## wide format, original format during data collection
@@ -20,10 +29,15 @@ library(tidyverse)
 # dat_wide %>% 
 #   write.csv("data_yield-quality_wide-format.csv",
 #             row.names = F)
+<<<<<<< HEAD
 
 dat_wide <- read.csv("data_yield-quality_wide-format.csv")
+=======
+dat <- read.csv("data_yield-quality_wide-format.csv")
+>>>>>>> 59e5fe208efa73ed653d84fa4aa6c5747f75e90a
 
 
+<<<<<<< HEAD
 # defining which columns are factors
 dat_wide %>% 
   mutate_if(is.character,as.factor) %>%
@@ -57,6 +71,19 @@ dat_wide$treatment <-
       "GO"
     )
   )
+=======
+# dat_wide %>% 
+#   dplyr::select((ends_with("1cut"))) %>% 
+#   glimpse ()
+
+# dat_wide %>% 
+#   # glimpse()
+#   pivot_longer(
+#     data = .
+#     cols = ends_with("1cut"),
+#     
+#   )
+>>>>>>> 59e5fe208efa73ed653d84fa4aa6c5747f75e90a
 
 
 # cumulative forage yield -------------------------------------------------
@@ -333,6 +360,7 @@ rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
 #   write.csv("data_yield-quality_long-format.csv",
 #             row.names = F)
 
+<<<<<<< HEAD
 dat_long <- read.csv("data_yield-quality_long-format.csv")
 
 dat_long <-dat_long%>%
@@ -390,3 +418,54 @@ dat_weather <- dat_weather %>%
                               `30` = "30 year average")) %>%
   mutate(date=as.POSIXct(.$date, 
                          format="%m/%d/%Y"))
+=======
+tdat <- read.csv("data_yield-quality_long-format.csv")
+
+
+# 
+# library(dplyr)
+# tdat<-tdat%>%
+#   mutate_if(is.character,as.factor) %>%
+#   mutate_at("year", as.factor) %>%
+#   mutate_at("age", as.integer) %>%
+#   mutate_at("block", as.factor) %>%
+#   mutate_at("plot", as.factor) %>%
+#   mutate_at("trt.code", as.factor)
+# 
+# tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+# tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
+# tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
+# tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+# 
+# # Forage quality
+# 
+# DM<-tdat$dry.matter
+# CP<-tdat$protein
+# NDF<-tdat$NDF
+# NDFD<-tdat$NDFD48
+# ADF<-tdat$ADF
+# 
+# EE<-2.05
+# FA<-EE-1
+# Ash<-100-DM
+# NFC<-100-((0.93*NDF)+CP+EE+Ash)
+# NDFn<-NDF*0.93
+# NDFDp<-22.7+0.664*NDFD
+# TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+# DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+# 
+# tdat$RFQ<-DMI*TDN/1.23
+# tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
+# 
+# #there are now 3 replicates of a single id
+# 
+# #outlier elimination may still required.
+# 
+# #we will at least eliminate I2
+# 
+# tdat <- tdat %>%
+#   filter(timing.1cut!="grain" & site!="I2")
+# 
+# rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
+# 
+>>>>>>> 59e5fe208efa73ed653d84fa4aa6c5747f75e90a
