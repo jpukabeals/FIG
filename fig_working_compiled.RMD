@@ -14,381 +14,52 @@ editor_options:
 
 This markdown file has everything you need for the forage timing "FIG" experiment. Data import, data analysis, figure generation, table generation and commentary along the way. 
 
-# Setup
+# Settings
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, 
-                      message = FALSE, 
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
                       warning = FALSE)
 
-if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, nlme, lsmeans, lme4, multcomp,multcompView,
-               googlesheets4, googledrive, lubridate, reshape2,ggpubr,
-               plotrix)
+if (!require("pacman"))
+  install.packages("pacman")
+pacman::p_load(
+  tidyverse,
+  lattice,
+  MASS,      #fitting distributions
+  agricolae,
+  nlme,      #when homogeneity of variance is violated
+  lme4,
+  car,
+  lsmeans,   #least square means from mixed models
+  emmeans,   #estimating marginal means from mixed models
+  multcomp,  #compact letter display of pairwise mean comparisons
+  # multcompView,
+  # googlesheets4,
+  # googledrive,
+  lubridate, #working with dates
+  ggpubr,    #figure arrangement, similar to cowplot
+  plotrix    # std.error summary
+)
 
-options(scipen=999) #reduce scientific notation 
-options(digits=4)   # only print 4 sig figs
+options(scipen = 999) #reduce scientific notation
+options(digits = 4)   # only print 4 sig figs
 # options(device = "windows")
+
+source("ggplot_custom_theme.R")
+theme_set(theme_jpb())
+
+cbp <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+bernie_mittens = c("#372421","#50506D","#855F4C","#465952","#B7A79B")
 
 # Remember to add chunk output in console for figure generation
 ```
 
-```{r import+tidy OLD, include=FALSE, cache=TRUE}
-
-dat <- read.csv("FIG_data - Sheet1.csv")
-weather<- read.csv("FIG_weather - Sheet1.csv")
-
-# driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
-#  
-# dat<-read_sheet(driveurl,gs4_deauth())
-# 
-# weatherurl<-"https://docs.google.com/spreadsheets/d/1I-kHBXThb0VSwOgRF6ZwiyOtC9-BwCtsKVl7_Z7-XXs/edit#gid=0"
-# weather<-read_sheet(weatherurl, gs4_deauth())
-# 
-# rm(driveurl, weatherurl)
-
-library(dplyr)
-dat<-dat%>%
-  mutate_if(is.character,as.factor) %>%
-  mutate_at("year", as.factor) %>%
-  mutate_at("age", as.integer) %>%
-  mutate_at("block", as.factor) %>%
-  mutate_at("plot", as.factor) %>%
-  mutate_at("trt.code", as.factor)
-
-dat$timing.1cut <- factor(dat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
-dat$follow.cut <- factor(dat$follow.cut, levels = c("none", "september", "october"))
-dat$site <- factor(dat$site, levels = c("I2", "R70", "R100"))
-dat$treatment <- factor(dat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
-
-#for total yield comparisons
-dat$yield.total.old <- rowSums(dat[,c("yield.1cut","yield.2cut","yield.3cut")], na.rm=T)
-# ^above method inaccurately calculated yield totals by including rows with NAs, all those rows must be dropped!
-
-oct <- dat %>%
-  filter(follow.cut=="october") %>%
-  dplyr::select(id,yield.1cut,yield.2cut,yield.3cut) %>%
-  drop_na() %>%
-  pull(id)
-
-sep <- dat %>%
-  filter(follow.cut=="september") %>%
-  dplyr::select(id,yield.1cut,yield.2cut) %>%
-  drop_na() %>%
-  pull(id)
-
-none <- dat %>%
-  filter(follow.cut=="none") %>%
-  dplyr::select(id,yield.1cut) %>%
-  drop_na() %>%
-  pull(id)
-
-goodid <- c(oct,sep,none)
-
-datyt <- dat %>%
-  filter(dat$id %in% goodid) %>%
-  rowwise() %>%
-  replace_na(list(yield.1cut=0,yield.2cut=0,yield.3cut=0)) %>%
-  transmute(id=id,
-           yield.total=sum(c(yield.1cut,yield.2cut,yield.3cut)))
-
-dat <- dplyr::left_join(dat,datyt,by="id")
-rm(none,oct,sep,datyt)
-# This method has computed a yield.total ONLY for rows without missing data
-sum(!is.na(dat$yield.total.old)) - sum(!is.na(dat$yield.total))
-# using rowsums allowed 93 datapoints to be included in yield.total that shouldn't have been
-
-#for forage quality comparisons 
-#First cut
-DM<-dat$dry.matter.1cut
-CP<-dat$protein.1cut
-NDF<-dat$NDF.1cut
-NDFD<-dat$NDFD48.1cut
-ADF<-dat$ADF.1cut
-
-EE<-2.05
-FA<-EE-1
-Ash<-100-DM
-NFC<-100-((0.93*NDF)+CP+EE+Ash)
-NDFn<-NDF*0.93
-NDFDp<-22.7+0.664*NDFD
-TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
-DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
-
-dat$RFQ.1cut<-DMI*TDN/1.23
-dat$RFV.1cut<-DMI*((89.8-(0.779*ADF)))/1.29
-
-# How are NAs handled?
-sum(is.na(DM))
-sum(is.na(CP))
-sum(is.na(NDF))
-sum(is.na(NDFD))
-sum(is.na(ADF))
-
-# v1 <- dat %>%
-#   dplyr::select(id,env,timing.1cut,dry.matter.1cut,protein.1cut) %>%
-#   arrange(dry.matter.1cut);view(v1)
-# rm(v1)
-# ^ all NAs are from grain cuts which get removed anyways, so not concerned since it's not part of working dataset
-
-
-#Second cut
-DM<-dat$dry.matter.2cut
-CP<-dat$protein.2cut
-NDF<-dat$NDF.2cut
-NDFD<-dat$NDFD48.2cut
-ADF<-dat$ADF.2cut
-
-EE<-2.05
-FA<-EE-1
-Ash<-100-DM
-NFC<-100-((0.93*NDF)+CP+EE+Ash)
-NDFn<-NDF*0.93
-NDFDp<-22.7+0.664*NDFD
-TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
-DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
-
-dat$RFQ.2cut<-DMI*TDN/1.23
-dat$RFV.2cut<-DMI*((89.8-(0.779*ADF)))/1.29
-
-sum(is.na(DM))
-sum(is.na(CP))
-sum(is.na(NDF))
-sum(is.na(NDFD))
-sum(is.na(ADF))
-
-# v2 <- dat3 %>%
-#   filter(follow.cut!="none") %>%
-#   dplyr::select(id,env,timing.1cut,dry.matter.2cut,protein.2cut) %>%
-#   arrange(dry.matter.2cut);view(v2)
-# # ^ id=179 has missing data
-# rm(v2)
-
-dat %>%
-  filter(id==179)
-# ^ but that missing data does not results in an NA for that row for the RFQ calculation, so no issue in working dataset
-
-#Third cut
-DM<-dat$dry.matter.3cut
-CP<-dat$protein.3cut
-NDF<-dat$NDF.3cut
-NDFD<-dat$NDFD48.3cut
-ADF<-dat$ADF.3cut
-
-EE<-2.05
-FA<-EE-1
-Ash<-100-DM
-NFC<-100-((0.93*NDF)+CP+EE+Ash)
-NDFn<-NDF*0.93
-NDFDp<-22.7+0.664*NDFD
-TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
-DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
-
-dat$RFQ.3cut<-DMI*TDN/1.23
-dat$RFV.3cut<-DMI*((89.8-(0.779*ADF)))/1.29
-
-
-#weighting the RFQ and RFV by their proportion of the final total forage for a plot
-dat$RFQ.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFQ.1cut 
-dat$RFQ.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFQ.2cut 
-dat$RFQ.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFQ.3cut 
-dat$RFQ.total.old <- rowSums(dat[,c("RFQ.1cut.wt","RFQ.2cut.wt","RFQ.3cut.wt")], na.rm=T)
-# the computed stats like RFQ and RFV and yield.3cut are fine because they preserve NA
-# problem is with rowSums simply skipping NAs rather than dropping the whole row if there's a missing datapoint
-
-sum(is.na(dat$RFQ.1cut.wt))
-sum(is.na(dat$RFQ.2cut.wt))
-sum(is.na(dat$RFQ.3cut.wt))
-
-octq <- dat %>%
-  filter(follow.cut=="october") %>%
-  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-sepq <- dat %>%
-  filter(follow.cut=="september") %>%
-  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-noneq <- dat %>%
-  filter(follow.cut=="none") %>%
-  dplyr::select(id,RFQ.1cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-goodidq <- c(octq,sepq,noneq)
-
-datqt <- dat %>%
-  filter(dat$id %in% goodidq) %>%
-  rowwise() %>%
-  replace_na(list(RFQ.1cut.wt=0,RFQ.2cut.wt=0,RFQ.3cut.wt=0)) %>%
-  transmute(id=id,
-           RFQ.total=sum(c(RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt))) %>%
-  na_if(.,0)
-
-dat <- dplyr::left_join(dat,datqt,by="id")
-rm(noneq,octq,sepq,datqt)
-# RFQ.total values that equaled zero are due to observations where forage quality data existed but yield data did not, resulting in an unknown weighted forage quality response, so it's recorded as NA in the dataset
-
-dat$RFV.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFV.1cut 
-dat$RFV.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFV.2cut 
-dat$RFV.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFV.3cut
-dat$RFV.total.old <- rowSums(dat[,c("RFV.1cut.wt","RFV.2cut.wt","RFV.3cut.wt")], na.rm=T)
-
-
-sum(is.na(dat$RFV.1cut.wt))
-sum(is.na(dat$RFV.2cut.wt))
-sum(is.na(dat$RFV.3cut.wt))
-# RFV NAs are identical to RFQ NAs, but to reduce liklihood of errors we'll reuse the same code but for RFV
-
-octv <- dat %>%
-  filter(follow.cut=="october") %>%
-  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-sepv <- dat %>%
-  filter(follow.cut=="september") %>%
-  dplyr::select(id,RFV.1cut.wt,RFV.2cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-nonev <- dat %>%
-  filter(follow.cut=="none") %>%
-  dplyr::select(id,RFV.1cut.wt) %>%
-  drop_na() %>%
-  pull(id)
-
-goodidv <- c(octv,sepv,nonev)
-
-datv <- dat %>%
-  filter(dat$id %in% goodidv) %>%
-  rowwise() %>%
-  replace_na(list(RFV.1cut.wt=0,RFV.2cut.wt=0,RFV.3cut.wt=0)) %>%
-  transmute(id=id,
-           RFV.total=sum(c(RFV.1cut.wt,RFV.2cut.wt,RFV.3cut.wt))) %>%
-  na_if(.,0)
-
-dat <- dplyr::left_join(dat,datv,by="id")
-rm(octv,sepv,nonev,datv)
-
-
-#incorporating $$$ using Hunter et al.
-#Value of the hay in $ per kg
-dat$value.1cut<-34+1.02*dat$RFV.1cut
-dat$value.2cut<-34+1.02*dat$RFV.2cut
-dat$value.3cut<-34+1.02*dat$RFV.3cut
-
-#Economic net economic return in $ per ha
-#subtracts cost of harvest ($143.06 per ha)
-dat$return.1cut<-dat$value.1cut*dat$yield.1cut*0.001-143.06
-dat$return.2cut<-dat$value.2cut*dat$yield.2cut*0.001-143.06
-dat$return.3cut<-dat$value.3cut*dat$yield.3cut*0.001-143.06
-dat$return.total.old<-rowSums(dat[,c("return.1cut","return.2cut","return.3cut")], na.rm=T)
-
-octr <- dat %>%
-  filter(follow.cut=="october") %>%
-  dplyr::select(id,return.1cut,return.2cut,return.3cut) %>%
-  drop_na() %>%
-  pull(id)
-
-sepr <- dat %>%
-  filter(follow.cut=="september") %>%
-  dplyr::select(id,return.1cut,return.2cut) %>%
-  drop_na() %>%
-  pull(id)
-
-noner <- dat %>%
-  filter(follow.cut=="none") %>%
-  dplyr::select(id,return.1cut) %>%
-  drop_na() %>%
-  pull(id)
-
-goodidr <- c(octr,sepr,noner)
-
-datr <- dat %>%
-  filter(dat$id %in% goodidr) %>%
-  rowwise() %>%
-  replace_na(list(return.1cut=0,return.2cut=0,return.3cut=0)) %>%
-  transmute(id=id,
-           return.total=sum(c(return.1cut,return.2cut,return.3cut))) %>%
-  na_if(.,0)
-
-dat <- dplyr::left_join(dat,datr,by="id")
-rm(octr,sepr,noner,datr)
-# ^ this removed multiple ID's where a return.total was incorrectly calculated from a plot that had missing data at one of the cuts
-
-rm(goodid,goodidq,goodidr,goodidv)
-rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
-#^these goodid vectors we just removed only are used to calculate correct rowsums and have nothing to do with outliers
-
-weather1 <- weather %>%
-  mutate_at("year", as.factor) %>%
-  mutate(year = recode_factor(year,
-                      `30` = "30 year average")) %>%
-  mutate(date=as.POSIXct(.$date, 
-           format="%m/%d/%Y"))
+```{r import data}
+source("fig_import-data.R")
 ```
 
-```{r import+tidy NEW, include=FALSE, cache=TRUE}
-
-tdat <- read.csv("FIG_data_modified - final.csv")
-
-# driveurl<-"https://docs.google.com/spreadsheets/d/1sRbJgHVK8YPWsqQXDi8jhn5P1qeqs1bfm0vvR4k-wC8/edit#gid=2030086613"
-# 
-# tdat<-read_sheet(driveurl,gs4_deauth())
-
-library(dplyr)
-tdat<-tdat%>%
-  mutate_if(is.character,as.factor) %>%
-  mutate_at("year", as.factor) %>%
-  mutate_at("age", as.integer) %>%
-  mutate_at("block", as.factor) %>%
-  mutate_at("plot", as.factor) %>%
-  mutate_at("trt.code", as.factor)
-
-tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
-tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
-tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
-tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
-
-# Forage quality
-
-DM<-tdat$dry.matter
-CP<-tdat$protein
-NDF<-tdat$NDF
-NDFD<-tdat$NDFD48
-ADF<-tdat$ADF
-
-EE<-2.05
-FA<-EE-1
-Ash<-100-DM
-NFC<-100-((0.93*NDF)+CP+EE+Ash)
-NDFn<-NDF*0.93
-NDFDp<-22.7+0.664*NDFD
-TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
-DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
-
-tdat$RFQ<-DMI*TDN/1.23
-tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
-
-#there are now 3 replicates of a single id
-
-#outlier elimination may still required.
-
-#we will at least eliminate I2
-
-tdat <- tdat %>%
-  filter(timing.1cut!="grain" & site!="I2")
-
-rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
-
-
-```
-
-## Missing and problematic data
+## missing and problematic data
 
 *missing data*\
 The data for both follow-up cuts of at the R70 site in 2018 are missing
@@ -415,34 +86,13 @@ from the dataset we analyzed to answer our research questions.
 
 ```{r working datasets, include=FALSE, cache=TRUE}
  
-dat1 <- dat %>%
+dat1 <- dat_wide %>%
   filter(timing.1cut!="grain" & site!="I2")
 #for response variables ending in .1cut
 
-dat3 <- dat %>%
+dat3 <- dat_wide %>%
   filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain") 
 # for response variables ending in .2cut or .3cut
-
-# The dat1 and dat3 datasets may still contain an occasional missing value depending on the response variable being examined (see below example with yield), but those missing values will be ignored as NAs during analysis and graphing. For summarise funciton, we can use na.omit() to handle NA's
-
-# example of dat3 with a missing yield observation
-dat3yield <- dat %>%
-  filter(dat$id %in% goodid) %>%
-  filter(site!="I2"&env!="R70.2018"&timing.1cut!="grain")
-
-overlap <- dplyr::left_join(dat3,dat3yield,by="id")
-
-overlap %>%
-  dplyr::select(id,env.x,env.y,yield.total.x,yield.total.y) %>%
-  arrange(yield.total.y)
-# ^ id 164 has missing data for a yield cut and should therefore be removed for yield.total
-
-dat3 %>%
-  filter(id==164) %>%
-  dplyr::select(id,follow.cut,yield.1cut,yield.2cut,yield.3cut,yield.total)
-# if comparing among yield.2cut values, the dat3 dataset still has a missing value, but this is not a problem for the analysis, it's just an example of how our working datasets still may contain missing observations 
-
-rm(dat3yield,overlap)
 
 ```
 
@@ -501,7 +151,7 @@ environment, which was
 `r median(subset(dat1, env=="R100.2019" & treatment=="DO")$yield.1cut)`.
 
 ```{r outlier-free datasets, include=FALSE, cache=TRUE}
-dat %>%
+dat_wide %>%
   filter(env=="R100.2019") %>%
   dplyr::select(id,plot,yield.1cut) %>%
   arrange(yield.1cut)
@@ -518,41 +168,28 @@ dat1.q1.df <- dat1 %>%
   filter(id!=189) 
 #this dataframe is for analysis of RFQ.1cut responses
 
-#dat1 and dat3 are sufficient for all other responses
+#dat1 and dat3 are sufficient for all other cases
 
 rm(dat1.q1.out,dat1.y1.out)
 
 ```
 
 
-```{r tdat inspection}
-# remember tdat$id has duplicated id values, complications dplyr::join
-
-sum(!is.na(tdat$yield))
-#so we have 251 yield observations in tdat
-
-sum(!is.na(dat1$yield.1cut))
-sum(!is.na(dat1$yield.2cut))
-sum(!is.na(dat1$yield.3cut))
-144+71+36
-
-sum(!is.na(dat3$yield.1cut))
-sum(!is.na(dat3$yield.2cut))
-sum(!is.na(dat3$yield.3cut))
-108+71+36
-
-# tdat has same amount of yield data as dat1, but less than dat3
-# dat1 contains R70.2018, if we remove R70.2018 data, then tdat=dat3
-
-sum(!is.na(subset(tdat,env!="R70.2018")$yield))
-
-
-```
-
-
 # Run all code above
 
-```{r}
+```{r eval=F}
+
+dat1
+#for response variables ending in .1cut
+
+dat3  
+# for response variables ending in .2cut or .3cut
+
+dat1.y1.df 
+# for analysis of yield.1cut responses
+
+dat1.q1.df
+# for analysis of RFQ.1cut responses
 
 ```
 
@@ -576,7 +213,7 @@ Anderson and Burnham (2002).
 Our global model is a linear mixed effect model containing the following
 effects...
 
-*Fixed effects*: timing, intensity, timing\*intensity
+*Fixed effects*: timing, intensity, timing*intensity
 
 *Random effects*: block nested within site, timing, env
 
@@ -606,6 +243,26 @@ intensity" in the manuscript. They are the same thing* *Note: we use
 experiment, not the age of the kernza stand* *Note: we use the dat3
 dataset when we are looking at yearly totals of yield and quality
 because R70.2018 lacked september and october harvests*
+
+# Classical analysis
+
+
+```{r sampling}
+
+# how good were we at sampling the population?
+# looking at forage yield, we'd expect it normally distributed within an environment and treatment
+
+dat_long %>% 
+  filter(env=="R100.2019") %>% 
+  ggplot(aes(yield.Mg,
+             color = xcut)) +
+  geom_density() +
+  facet_wrap(~xcut, scales = "free")
+# even within an environment not clear
+
+```
+
+
 
 # General trends
 
@@ -640,7 +297,7 @@ but its quality decreases.
 # yield.Mg
 global.yield <- lmer(yield.Mg~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(global.yield)
 car::Anova(global.yield)
 
@@ -648,31 +305,31 @@ car::Anova(global.yield)
 # protein
 global.protein <- lmer(protein~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 # summary(global.protein)
 car::Anova(global.protein)
 # ADF
 global.adf <- lmer(ADF~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 # summary(global.adf)
 car::Anova(global.adf)
 # NDF
 global.ndf <- lmer(NDF~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 # summary(global.ndf)
 car::Anova(global.ndf)
 # NDFD48
 global.ndfd <- lmer(NDFD48~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 # summary(global.ndfd)
 car::Anova(global.ndfd)
 # RFV
 global.rfv <- lmer(RFV~timing.1cut*follow.cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 # summary(global.rfv)
 car::Anova(global.rfv)
 
@@ -683,7 +340,7 @@ Read these posts about the issue.
 https://stackoverflow.com/questions/37090722/lme4lmer-reports-fixed-effect-model-matrix-is-rank-deficient-do-i-need-a-fi
 https://stats.stackexchange.com/questions/35071/what-is-rank-deficiency-and-how-to-deal-with-it/35077#35077
 
-```{r add annual cumulative yield into tdat}
+```{r add annual cumulative yield into dat_long}
 
 # need to unmelt data frame
 # select every part of a plots identity except cutting
@@ -982,55 +639,6 @@ Data Transformation tasks for original dataset to generate tables
 For all columns ending in '.1cut', 
 
 
-```{r repeat, eval=F}
-
-driveurl<-"https://docs.google.com/spreadsheets/d/1sRbJgHVK8YPWsqQXDi8jhn5P1qeqs1bfm0vvR4k-wC8/edit#gid=2030086613"
-
-tdat<-read_sheet(driveurl,gs4_deauth())
-
-library(dplyr)
-tdat<-tdat%>%
-  mutate_if(is.character,as.factor) %>%
-  mutate_at("year", as.factor) %>%
-  mutate_at("age", as.integer) %>%
-  mutate_at("block", as.factor) %>%
-  mutate_at("plot", as.factor) %>%
-  mutate_at("trt.code", as.factor)
-
-tdat$timing.1cut <- factor(tdat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
-tdat$follow.cut <- factor(tdat$follow.cut, levels = c("none", "september", "october"))
-tdat$site <- factor(tdat$site, levels = c("I2", "R70", "R100"))
-tdat$treatment <- factor(tdat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
-
-# Forage quality
-
-DM<-tdat$dry.matter
-CP<-tdat$protein
-NDF<-tdat$NDF
-NDFD<-tdat$NDFD48
-ADF<-tdat$ADF
-
-EE<-2.05
-FA<-EE-1
-Ash<-100-DM
-NFC<-100-((0.93*NDF)+CP+EE+Ash)
-NDFn<-NDF*0.93
-NDFDp<-22.7+0.664*NDFD
-TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
-DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
-
-tdat$RFQ<-DMI*TDN/1.23
-tdat$RFV<-DMI*((89.8-(0.779*ADF)))/1.29
-
-#outlier elimination still required.
-
-#we will at least eliminate I2
-
-tdat <- tdat %>%
-  filter(timing.1cut!="grain" & site!="I2")
-
-
-```
 
 
 
@@ -1041,7 +649,7 @@ Reported RFQ at the time of harvest. This is not weighted or summed across years
 
 q.t.i.1 <- lmer(RFQ~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
 cld(emmeans(q.t.i.1, ~timing.1cut))
@@ -1052,11 +660,11 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
 
 car::Anova(lmer(RFQ~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, xcut=="1")))
+                 subset(dat_long, xcut=="1")))
 
 ob<- lmer(RFQ~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, xcut=="1"))
+                 subset(dat_long, xcut=="1"))
 
 cld(emmeans(ob,~timing.1cut))
 
@@ -1066,7 +674,7 @@ cld(emmeans(ob,~timing.1cut))
 ```{r}
 q.t.i.boot <- lmer(RFQ~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1077,7 +685,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(RFQ~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1086,7 +694,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(RFQ~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1095,7 +703,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 ## RFV
 
 ```{r}
-tdat %>%
+dat_long %>%
   group_by(timing.1cut, xcut) %>%
   summarise(m=mean(na.omit(RFV)))
 
@@ -1106,11 +714,11 @@ tdat %>%
 
 q.t.i.1 <- lmer(RFV~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 
 q.t.i.1 <- lmer(log(RFV)~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
@@ -1124,7 +732,7 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut),
 ```{r}
 q.t.i.boot <- lmer(RFV~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1135,7 +743,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(RFV~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1144,7 +752,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(RFV~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1156,7 +764,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 
 ```{r eval=F}
-# q.t.i.1 <- tdat %>%
+# q.t.i.1 <- dat_long %>%
 #   filter(xcut==1)%>%
 #   lmer(protein~timing.1cut*follow.cut +
 #                    (1|site/block/timing.1cut) + (1|env),data = .)
@@ -1172,7 +780,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 q.t.i.1 <- lmer(protein~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
 cld(emmeans(q.t.i.1, ~timing.1cut))
@@ -1184,7 +792,7 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
 ```{r}
 q.t.i.boot <- lmer(protein~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1195,7 +803,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(protein~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1204,7 +812,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(protein~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1219,7 +827,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 q.t.i.1 <- lmer(ADF~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
 cld(emmeans(q.t.i.1, ~timing.1cut))
@@ -1231,7 +839,7 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
 ```{r}
 q.t.i.boot <- lmer(ADF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1242,7 +850,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(ADF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1251,7 +859,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(ADF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1265,7 +873,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 q.t.i.1 <- lmer(NDF~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
 cld(emmeans(q.t.i.1, ~timing.1cut))
@@ -1277,7 +885,7 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
 ```{r}
 q.t.i.boot <- lmer(NDF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1288,7 +896,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(NDF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1297,7 +905,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(NDF~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1311,7 +919,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 q.t.i.1 <- lmer(NDFD48~timing.1cut*factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 tdat)
+                 dat_long)
 summary(q.t.i.1)
 car::Anova(q.t.i.1)
 cld(emmeans(q.t.i.1, ~timing.1cut))
@@ -1323,7 +931,7 @@ cld(emmeans(q.t.i.1, ~timing.1cut*xcut))
 ```{r}
 q.t.i.boot <- lmer(NDFD48~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="boot"))
+                 subset(dat_long, timing.1cut=="boot"))
 summary(q.t.i.boot)
 car::Anova(q.t.i.boot)
 cld(emmeans(q.t.i.boot, ~factor(xcut)))
@@ -1334,7 +942,7 @@ cld(emmeans(q.t.i.boot, ~factor(xcut)))
 ```{r}
 q.t.i.anthesis <- lmer(NDFD48~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="anthesis"))
+                 subset(dat_long, timing.1cut=="anthesis"))
 summary(q.t.i.anthesis)
 car::Anova(q.t.i.anthesis)
 cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
@@ -1343,7 +951,7 @@ cld(emmeans(q.t.i.anthesis, ~factor(xcut)))
 ```{r}
 q.t.i.dough <- lmer(NDFD48~factor(xcut) +
                    (1|site/block/timing.1cut) + (1|env),
-                 subset(tdat, timing.1cut=="dough"))
+                 subset(dat_long, timing.1cut=="dough"))
 summary(q.t.i.dough)
 car::Anova(q.t.i.dough)
 cld(emmeans(q.t.i.dough, ~factor(xcut)))
@@ -1687,81 +1295,13 @@ minquality.1cut #estimate minimum quality will be RFQ=79
 
 # Figures for publication
 
-## setup  ----------------------------------------------------------
+I want to go over this section to impose theme_jpb, which is default and to create standard sizes
 
 
-```{r}
-cbp <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
-bernie_mittens = c("#372421","#50506D","#855F4C","#465952","#B7A79B")
-cbp2 <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
-                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+## fig1: site conditions ---------------------------------------------------------
 
-library(ggpubr)
-
-```
-
-## site conditions, fig 1  ---------------------------------------------------------
-
-#### Precipitation, cumulative
-
-
-```{r}
-# lubridate::yday(weather1$date),"01-01-2017"
-# 
-# weather1$date
-# 
-# as.POSIXct(weather1$date, 
-#            format="%m/%d/%Y")
-# yday(as.POSIXct(weather1$date, 
-#            format="%m/%d/%Y"))
-
-library(ggplot2)
-ggplot(weather1, 
-       aes(x = as.Date(yday(date), "2017-01-01"), 
-           y = cum.precip, 
-           color = factor(year))) +
-  geom_path(size=1) +
-  scale_x_date(date_breaks="months", date_labels="%b") +
-  labs(x="",
-       colour="",
-       y="Cumulative precipitation \n(mm)") +
-  theme_bw() +
-  scale_color_manual(values = cbp)
-
-```
-
-### GDD, cumulative
-
-```{r}
-ggplot(subset (weather1, year!="30 year average"), 
-       aes(x = as.Date(yday(date), "2017-01-01"), 
-           y = Cumulative.GDD, 
-           color = factor(year))) +
-  geom_path(size=1) +
-  scale_x_date(date_breaks="months", date_labels="%b") +
-  labs(x="",
-       colour="",
-       y="Growing Degree Day\nAccumulation") +
-  theme_bw() +
-  scale_color_manual(values = cbp[2:4])
-```
-
-
-### Precip+GDD vs. sample timing
-
-```{r}
-
-dat1 %>%
-  group_by(year,follow.cut) %>%
-  drop_na(date.1cut) %>%
-  summarise(spring.cuts = unique(date.1cut)#,
-            # doy = yday(unique(date.1cut))
-            ) %>%
-  View()
-
-
-
-library(tidyr)
+```{r }
+# determining average day of year of samplings
 sum.d1cut <- dat1 %>%
   group_by(timing.1cut) %>%
   drop_na(date.1cut) %>%
@@ -1805,16 +1345,20 @@ sample.times <- c("b","a","d","2","3")
 sample.times.df <- data.frame(sample.times,doy.avg)
 
 rm(sum.d1cut,sum.d2cut,sum.d3cut)
+```
 
-GDD.1 <- ggplot() +
-  geom_path(data=subset(weather1, year!="30 year average"),
+
+```{r figure_site-conditions}
+
+GDD_fig <- ggplot() +
+  geom_path(data=subset(dat_weather, year!="30 year average"),
             aes(x = as.Date(yday(date), "2017-01-01"), 
                 y=Cumulative.GDD,
                 color=year),
             linetype=1,
             size=1,
             alpha=0.7) +
-  geom_vline(data=sample.times.df,
+  geom_vline(
              xintercept = as.Date(doy.avg, "2017-01-01"),
              linetype="dotted",
              size=.75) +
@@ -1825,7 +1369,8 @@ GDD.1 <- ggplot() +
                  # hjust = .5,
                  vjust = 0,
                  size=3)) +
-  scale_color_manual(values = c("#818181", "#ABABAB", "#CCCCCC"))+
+  scale_color_manual( #need to scale manual to combine with GDD graph
+    values = c("#818181", "#ABABAB", "#CCCCCC")) + 
   scale_x_date(date_breaks="months", date_labels="%b") +
   labs(x="",
        colour="",
@@ -1834,10 +1379,11 @@ GDD.1 <- ggplot() +
   theme(legend.position = "none",
         axis.title = element_text(size = 12),
         axis.text = element_text(size=10),
-        legend.text = element_text(size=10));GDD.1
+        legend.text = element_text(size=10)
+        );GDD_fig
 
 
-precip.2 <- ggplot(weather1, 
+precip_fig <- ggplot(dat_weather, 
                    aes(x = as.Date(yday(date), "2017-01-01"), 
                        y = cum.precip, 
                        color = factor(year))) +
@@ -1858,11 +1404,11 @@ precip.2 <- ggplot(weather1,
     legend.justification = c("left", "top"),
     axis.title = element_text(size = 12),
     axis.text = element_text(size=10),
-    legend.text = element_text(size=10));precip.2
+    legend.text = element_text(size=10));precip_fig
 
 
 
-ggarrange(precip.2, GDD.1, ncol = 1, nrow = 2, align = "v")
+ggarrange(precip_fig, GDD_fig, ncol = 1, nrow = 2, align = "v")
 # ggsave("site.conditions.png")
 ggsave("fig1.png", width = 5.37,height=6.31,
        units = "in", dpi=500)
@@ -1870,302 +1416,53 @@ ggsave("fig1.png", width = 5.37,height=6.31,
 ```
 
 
-```{r}
-GDD.3 <- ggplot() +
-  geom_path(data=subset(weather1, year!="30 year average"),
-            aes(x = as.Date(yday(date), "2017-01-01"), 
-                y=`Cumulative GDD`,
-                color=year),
-            linetype=1,
-            size=1,
-            alpha=0.7) +
-  geom_vline(data=sample.times.df,
-             xintercept = as.Date(doy.avg, "2017-01-01"),
-             linetype="dotted",
-             size=.75) +
-  geom_label(data=sample.times.df,
-             aes(x=as.Date(doy.avg, "2017-01-01"),
-                 y=-250,
-                 label=sample.times,
-                 # hjust = .5,
-                 vjust = 0,
-                 size=3)) +
-  scale_color_manual(values = cbp[2:4])+
-  scale_x_date(date_breaks="months", date_labels="%b") +
-  labs(x="",
-       colour="",
-       y="Cumulative growing degree days") +
-  theme_bw()+
-  theme(legend.position = "none",
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size=10),
-        legend.text = element_text(size=10),
-        plot.margin = unit(c(0,1,1,1),"cm"));GDD.3
+## fig2: yield+quality at time of cutting
 
-
-precip.3 <- ggplot(weather1, 
-                   aes(x = as.Date(yday(date), "2017-01-01"), 
-                       y = cum.precip, 
-                       color = factor(year))) +
-  geom_path(size=1) +
-  scale_x_date(date_breaks="months", date_labels="%b") +
-  labs(x="",
-       colour="",
-       y="Cumulative precipitation (mm)") +
-  theme_bw() +
-  scale_color_manual(values = cbp) +
-  geom_vline(xintercept = as.Date(doy.avg, "2017-01-01"),
-             linetype="dotted",
-             size=.72)+
-  theme(legend.position = c(.05, .95),
-    legend.justification = c("left", "top"),
-    axis.title = element_text(size = 12),
-    axis.text.x = element_blank(),
-    legend.text = element_text(size=10),
-    plot.margin = unit(c(1,1,-.7,1),"cm"));precip.3
-
-
-ggarrange(precip.3, GDD.3, ncol = 1, nrow = 2, align = "v",
-          heights = c(3.5,4))
-ggsave("site.conditions.png")
-ggsave("site.conditions.png", width = 6.04,height = 6.24,
-       dpi = 500)
-
-
-
-```
-
-
-## RFV.total+$ effect size, fig X --------------------------------------------------
-
-```{r}
-yt.fig <- dat3 %>%
-  filter(!is.na(yield.total)) %>%
-  mutate(yield.total=yield.total/1000) %>%
-  group_by(timing.1cut,follow.cut) %>%
-  summarise(mean=mean(yield.total),n=n(),
-            se=sd(yield.total)/sqrt(n)) %>%
-  ggplot(aes(timing.1cut,mean,
-             group=follow.cut,
-             fill=follow.cut))+
-  geom_col(position = position_dodge(0.8),
-           width=0.7)+
-  geom_errorbar(aes(ymin=mean-se,
-                    ymax=mean+se),
-                width=0,
-                position = position_dodge(0.8)) +
-  scale_fill_manual(name="Harvest intensity",
-                    values=cbp2, labels=c("1 cut", "2 cuts", "3 cuts"),
-                    guide=guide_legend())+
-  labs(y=expression("Forage yield" ~ (Mg ~ ha^{-1}*yr^{-1})),
-       x="") +
-  theme_bw() +
-  scale_y_continuous(expand = c(0,0),
-                     limits = c(0,7))+
-  theme(legend.position = "none",
-        axis.text.x.bottom = element_blank());yt.fig
-
-qt.fig <- dat3 %>%
-  filter(!is.na(RFV.total)) %>%
-  group_by(timing.1cut,follow.cut) %>%
-  summarise(mean=mean(RFV.total),n=n(),
-            se=sd(RFV.total)/sqrt(n)) %>%
-  ggplot(aes(timing.1cut,mean,
-             group=follow.cut,
-             fill=follow.cut))+
-  geom_col(position = position_dodge(0.8),
-           width=0.7)+
-  geom_errorbar(aes(ymin=mean-se,
-                    ymax=mean+se),
-                width=0,
-                position = position_dodge(0.8)) +
-  scale_fill_manual(name="Harvest intensity",
-                    values=cbp2[2:4], labels=c("1 cut", "2 cuts", "3 cuts"),
-                    guide=guide_legend())+
-  labs(y="Relative forage value\n(cumulative weighted)",
-       x="") +
-  theme_bw() +
-  scale_y_continuous(expand = c(0,0),
-                     limits = c(0,130))+
-  theme(legend.position = "none",
-        axis.text.x.bottom = element_blank(),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size=10),
-        legend.text = element_text(size=10))+  scale_fill_grey(  start = 0.2,
-  end = 0.8,
-  na.value = "red",
-  aesthetics = "fill");qt.fig
-
-rt.fig <- dat3 %>%
-  filter(!is.na(return.total)) %>%
-  mutate(timing.1cut = recode(timing.1cut,
-                              boot = "Boot",
-                              anthesis = "Anthesis",
-                              dough = "Dough",
-                              grain="Grain")) %>%
-  group_by(timing.1cut,follow.cut) %>%
-  summarise(mean=mean(return.total),n=n(),
-            se=sd(return.total)/sqrt(n)) %>%
-  ggplot(aes(timing.1cut,mean,
-             group=follow.cut,
-             fill=follow.cut))+
-  geom_col(position = position_dodge(0.8),
-           width=0.7)+
-  geom_errorbar(aes(ymin=mean-se,
-                    ymax=mean+se),
-                width=0,
-                position = position_dodge(0.8)) +
-  scale_fill_manual(name="Harvest intensity: ",
-                    values=cbp2[2:4], labels=c("1-cut", "2-cut", "3-cut"),
-                    guide=guide_legend())+
-  labs(y=expression("Net returns" ~ ("$" ~ ha^{-1}*yr^{-1})),
-       x="") +
-  theme_bw() +
-  scale_y_continuous(expand = c(0,0),
-                     limits = c(0,500))+
-  theme(legend.position = "bottom",
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size=10),
-        legend.text = element_text(size=10))+
-  scale_fill_grey(
-  start = 0.2,
-  end = 0.8,
-  na.value = "red",
-  aesthetics = "fill");rt.fig
-
-ggarrange(qt.fig,rt.fig, 
-                     heights = c(9,11),
-                     # labels = c("A","B","C"),
-                     ncol = 1, nrow = 2,
-                     align = "v")
-ggsave("effectsize.png")
-ggsave("effectsize.png", width = 5.06, height = 6.95)
-
-
-```
-
-
-
-```{r eval=F}
-
-# qt.fig.2 <- dat3 %>%
-#   filter(!is.na(RFV.total)) %>%
-#   group_by(timing.1cut,follow.cut) %>%
-#   summarise(mean=mean(RFV.total),n=n(),
-#             se=sd(RFV.total)/sqrt(n)) %>%
-#   ggplot(aes(timing.1cut,mean,
-#              group=follow.cut,
-#              fill=follow.cut))+
-#   geom_col(position = position_dodge(0.8),
-#            width=0.7)+
-#   geom_errorbar(aes(ymin=mean-se,
-#                     ymax=mean+se),
-#                 width=0,
-#                 position = position_dodge(0.8)) +
-#   scale_fill_manual(name="Harvest intensity",
-#                     values=cbp2[2:4], labels=c("1 cut", "2 cuts", "3 cuts"),
-#                     guide=guide_legend())+
-#   labs(y="Relative forage value\n(cumulative weighted)",
-#        x="") +
-#   theme_bw() +
-#   scale_y_continuous(expand = c(0,0),
-#                      limits = c(0,130))+
-#   theme(legend.position = "none",
-#         axis.text.x.bottom = element_blank(),
-#         axis.title = element_text(size = 12),
-#         axis.text = element_text(size=10),
-#         legend.text = element_text(size=10),
-#         plot.margin = unit(c(0,1,0,1),"cm"));qt.fig.2
-# 
-# rt.fig.2 <- dat3 %>%
-#   filter(!is.na(return.total)) %>%
-#   mutate(timing.1cut = recode(timing.1cut,
-#                               boot = "Boot",
-#                               anthesis = "Anthesis",
-#                               dough = "Dough",
-#                               grain="Grain")) %>%
-#   group_by(timing.1cut,follow.cut) %>%
-#   summarise(mean=mean(return.total),n=n(),
-#             se=sd(return.total)/sqrt(n)) %>%
-#   ggplot(aes(timing.1cut,mean,
-#              group=follow.cut,
-#              fill=follow.cut))+
-#   geom_col(position = position_dodge(0.8),
-#            width=0.7)+
-#   geom_errorbar(aes(ymin=mean-se,
-#                     ymax=mean+se),
-#                 width=0,
-#                 position = position_dodge(0.8)) +
-#   scale_fill_manual(name="Harvest intensity: ",
-#                     values=cbp2[2:4], labels=c("1-cut", "2-cut", "3-cut"),
-#                     guide=guide_legend())+
-#   labs(y=expression("Net returns" ~ ("$" ~ ha^{-1}*yr^{-1})),
-#        x="") +
-#   theme_bw() +
-#   scale_y_continuous(expand = c(0,0),
-#                      limits = c(0,500))+
-#   theme(legend.position = "bottom",
-#         axis.title = element_text(size = 12),
-#         axis.text = element_text(size=10),
-#         legend.text = element_text(size=10),
-#         plot.margin = unit(c(.3,1,0,1),"cm"));rt.fig.2
-# 
-# ggarrange(qt.fig.2,rt.fig.2, 
-#                      heights = c(9,11),
-#                      # labels = c("A","B","C"),
-#                      ncol = 1, nrow = 2,
-#                      align = "v")
-
-```
-
-
-
-## yield+quality at time of cutting, fig 2
 ###yield
 
 ```{r dataset for figure for jake}
-library(dplyr)
-library(plotrix)
-tdat %>% 
+dat_long %>% 
   mutate(yield=yield/1000)%>%
-  group_by(timing.1cut,xcut) %>%
+  group_by(timing.1cut) %>%
   summarise(yield=mean(na.omit(yield)),
-            sd=sd(yield,na.rm = T)) 
+            sd.yield=sd(yield,na.rm = T)
+            ) 
+
 #^ no idea why NA returned for sd!
 
-b1 <- tdat %>%
+b1 <- dat_long %>%
   filter(timing.1cut=="boot" & xcut=="1") %>%
   summarise(y=mean(yield),
             se=std.error(yield))
-b2 <- tdat %>%
+b2 <- dat_long %>%
   filter(timing.1cut=="boot" & xcut=="2") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
-b3<-tdat %>%
+b3<-dat_long %>%
   filter(timing.1cut=="boot" & xcut=="3") %>%a
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
-a1<-tdat %>%
+a1<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="1") %>%
   summarise(y=mean(yield),
             se=std.error(yield))
-a2<-tdat %>%
+a2<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="2") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
-a3<-tdat %>%
+a3<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="3") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
-d1<-tdat %>%
+d1<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="1") %>%
   summarise(y=mean(yield),
             se=std.error(yield))
-d2<-tdat %>%
+d2<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="2") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
-d3<-tdat %>%
+d3<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="3") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
@@ -2189,17 +1486,14 @@ mean.se.df$trt.code
 tukey.df$trt.code
 
 df2 <- left_join(mean.se.df,tukey.df,by="trt.code");df2
-df2
 
 df2 %>%
   mutate(timing.1cut=factor(timing.1cut,levels = c("Boot","Anthesis","Dough"))) %>%
   str()
-str(df2$timing.1cut)
 
 rm(a1,a2,a3,b1,b2,b3,d1,d2,d3)
 
 ```
-
 
 ```{r yield figure for Jake}
 yield.gg <- df2 %>%
@@ -2220,13 +1514,17 @@ yield.gg <- df2 %>%
   scale_fill_manual(name="",
                     values=grey.colors(n=3,
                                        start=0.2,
-                                       end=0.8), labels=c("1st cutting", "2nd cutting", "3rd cutting"),
+                                       end=0.8), 
+                    labels=c("1st cutting", 
+                             "2nd cutting", 
+                             "3rd cutting"),
                     guide=guide_legend())+
   labs(y=expression("Forage yield" ~ (Mg ~ ha^{-1})),
        x="") +
   theme_bw() +
-  scale_y_continuous(expand = c(0,0),
-                     limits = c(0,4.5)) +
+  # scale_y_continuous(
+    # expand = c(0,0),
+    # limits = c(0,4.5)) +
   theme(legend.position = c(.05, .99),
         legend.justification = c("left", "top"),
         axis.title = element_text(size = 12),
@@ -2234,54 +1532,51 @@ yield.gg <- df2 %>%
         legend.text = element_text(size=10),
         axis.text.x = element_blank());yield.gg
 
-# ggsave("yield.png")
-# ggsave("yield.png",width = 4.65,height = 3.94,units = "in")
-
 ```
 
 ###quality
 
 ```{r data for figure}
-tdat %>% 
+dat_long %>% 
   mutate(RFV=RFV/1000)%>%
   group_by(timing.1cut,xcut) %>%
   summarise(RFV=mean(na.omit(RFV)),
             sd=sd(RFV,na.rm = T)) 
 #^ no idea why NA returned for sd!
 
-b1 <- tdat %>%
+b1 <- dat_long %>%
   filter(timing.1cut=="boot" & xcut=="1") %>%
   summarise(y=mean(RFV),
             se=std.error(RFV))
-b2 <- tdat %>%
+b2 <- dat_long %>%
   filter(timing.1cut=="boot" & xcut=="2") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
-b3<-tdat %>%
+b3<-dat_long %>%
   filter(timing.1cut=="boot" & xcut=="3") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
-a1<-tdat %>%
+a1<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="1") %>%
   summarise(y=mean(RFV),
             se=std.error(RFV))
-a2<-tdat %>%
+a2<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="2") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
-a3<-tdat %>%
+a3<-dat_long %>%
   filter(timing.1cut=="anthesis" & xcut=="3") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
-d1<-tdat %>%
+d1<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="1") %>%
   summarise(y=mean(RFV),
             se=std.error(RFV))
-d2<-tdat %>%
+d2<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="2") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
-d3<-tdat %>%
+d3<-dat_long %>%
   filter(timing.1cut=="dough" & xcut=="3") %>%
   summarise(y=mean(na.omit(RFV)),
             se=std.error(RFV,na.rm = T))
@@ -2349,13 +1644,8 @@ rfv.gg <- df4 %>%
         axis.text = element_text(size=10),
         legend.text = element_text(size=10));rfv.gg
 
-# ggsave("rfv.png")
-
 ggarrange(yield.gg, rfv.gg, 
           ncol = 1, nrow = 2, align = "v")
-ggsave("y.q.gg.png")
-# ggsave("y.q.gg.png",width = 4.85,height = 7,units = "in",
-#                     dpi = 500)
 ggsave("fig2.png",width = 4.85,height = 9,units = "in",
                     dpi = 500)
 
