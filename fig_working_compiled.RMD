@@ -46,8 +46,226 @@ options(scipen = 999) #reduce scientific notation
 options(digits = 4)   # only print 4 sig figs
 # options(device = "windows")
 
+<<<<<<< HEAD
 source("ggplot_custom_theme.R")
 theme_set(theme_jpb())
+=======
+# Remember to add chunk output in console for figure generation
+```
+
+```{r import+tidy OLD, include=FALSE, cache=TRUE}
+
+source("fig_import-data.R")
+
+
+# dat <- read.csv("FIG_data - Sheet1.csv")
+# weather<- read.csv("FIG_weather - Sheet1.csv")
+
+# driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
+#  
+# dat<-read_sheet(driveurl,gs4_deauth())
+# 
+# weatherurl<-"https://docs.google.com/spreadsheets/d/1I-kHBXThb0VSwOgRF6ZwiyOtC9-BwCtsKVl7_Z7-XXs/edit#gid=0"
+# weather<-read_sheet(weatherurl, gs4_deauth())
+# 
+# rm(driveurl, weatherurl)
+
+library(dplyr)
+dat<-dat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+dat$timing.1cut <- factor(dat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+dat$follow.cut <- factor(dat$follow.cut, levels = c("none", "september", "october"))
+dat$site <- factor(dat$site, levels = c("I2", "R70", "R100"))
+dat$treatment <- factor(dat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+#for total yield comparisons
+dat$yield.total.old <- rowSums(dat[,c("yield.1cut","yield.2cut","yield.3cut")], na.rm=T)
+# ^above method inaccurately calculated yield totals by including rows with NAs, all those rows must be dropped!
+
+oct <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,yield.1cut,yield.2cut,yield.3cut) %>%
+  drop_na() %>%
+  pull(id)
+
+sep <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,yield.1cut,yield.2cut) %>%
+  drop_na() %>%
+  pull(id)
+
+none <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,yield.1cut) %>%
+  drop_na() %>%
+  pull(id)
+
+goodid <- c(oct,sep,none)
+
+datyt <- dat %>%
+  filter(dat$id %in% goodid) %>%
+  rowwise() %>%
+  replace_na(list(yield.1cut=0,yield.2cut=0,yield.3cut=0)) %>%
+  transmute(id=id,
+           yield.total=sum(c(yield.1cut,yield.2cut,yield.3cut)))
+
+dat <- dplyr::left_join(dat,datyt,by="id")
+rm(none,oct,sep,datyt)
+# This method has computed a yield.total ONLY for rows without missing data
+sum(!is.na(dat$yield.total.old)) - sum(!is.na(dat$yield.total))
+# using rowsums allowed 93 datapoints to be included in yield.total that shouldn't have been
+
+#for forage quality comparisons 
+#First cut
+DM<-dat$dry.matter.1cut
+CP<-dat$protein.1cut
+NDF<-dat$NDF.1cut
+NDFD<-dat$NDFD48.1cut
+ADF<-dat$ADF.1cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.1cut<-DMI*TDN/1.23
+dat$RFV.1cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+# How are NAs handled?
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v1 <- dat %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.1cut,protein.1cut) %>%
+#   arrange(dry.matter.1cut);view(v1)
+# rm(v1)
+# ^ all NAs are from grain cuts which get removed anyways, so not concerned since it's not part of working dataset
+
+
+#Second cut
+DM<-dat$dry.matter.2cut
+CP<-dat$protein.2cut
+NDF<-dat$NDF.2cut
+NDFD<-dat$NDFD48.2cut
+ADF<-dat$ADF.2cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.2cut<-DMI*TDN/1.23
+dat$RFV.2cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+sum(is.na(DM))
+sum(is.na(CP))
+sum(is.na(NDF))
+sum(is.na(NDFD))
+sum(is.na(ADF))
+
+# v2 <- dat3 %>%
+#   filter(follow.cut!="none") %>%
+#   dplyr::select(id,env,timing.1cut,dry.matter.2cut,protein.2cut) %>%
+#   arrange(dry.matter.2cut);view(v2)
+# # ^ id=179 has missing data
+# rm(v2)
+
+dat %>%
+  filter(id==179)
+# ^ but that missing data does not results in an NA for that row for the RFQ calculation, so no issue in working dataset
+
+#Third cut
+DM<-dat$dry.matter.3cut
+CP<-dat$protein.3cut
+NDF<-dat$NDF.3cut
+NDFD<-dat$NDFD48.3cut
+ADF<-dat$ADF.3cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.3cut<-DMI*TDN/1.23
+dat$RFV.3cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+
+#weighting the RFQ and RFV by their proportion of the final total forage for a plot
+dat$RFQ.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFQ.1cut 
+dat$RFQ.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFQ.2cut 
+dat$RFQ.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFQ.3cut 
+dat$RFQ.total.old <- rowSums(dat[,c("RFQ.1cut.wt","RFQ.2cut.wt","RFQ.3cut.wt")], na.rm=T)
+# the computed stats like RFQ and RFV and yield.3cut are fine because they preserve NA
+# problem is with rowSums simply skipping NAs rather than dropping the whole row if there's a missing datapoint
+
+sum(is.na(dat$RFQ.1cut.wt))
+sum(is.na(dat$RFQ.2cut.wt))
+sum(is.na(dat$RFQ.3cut.wt))
+
+octq <- dat %>%
+  filter(follow.cut=="october") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+sepq <- dat %>%
+  filter(follow.cut=="september") %>%
+  dplyr::select(id,RFQ.1cut.wt,RFQ.2cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+noneq <- dat %>%
+  filter(follow.cut=="none") %>%
+  dplyr::select(id,RFQ.1cut.wt) %>%
+  drop_na() %>%
+  pull(id)
+
+goodidq <- c(octq,sepq,noneq)
+
+datqt <- dat %>%
+  filter(dat$id %in% goodidq) %>%
+  rowwise() %>%
+  replace_na(list(RFQ.1cut.wt=0,RFQ.2cut.wt=0,RFQ.3cut.wt=0)) %>%
+  transmute(id=id,
+           RFQ.total=sum(c(RFQ.1cut.wt,RFQ.2cut.wt,RFQ.3cut.wt))) %>%
+  na_if(.,0)
+
+dat <- dplyr::left_join(dat,datqt,by="id")
+rm(noneq,octq,sepq,datqt)
+# RFQ.total values that equaled zero are due to observations where forage quality data existed but yield data did not, resulting in an unknown weighted forage quality response, so it's recorded as NA in the dataset
+
+dat$RFV.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFV.1cut 
+dat$RFV.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFV.2cut 
+dat$RFV.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFV.3cut
+dat$RFV.total.old <- rowSums(dat[,c("RFV.1cut.wt","RFV.2cut.wt","RFV.3cut.wt")], na.rm=T)
+
+
+sum(is.na(dat$RFV.1cut.wt))
+sum(is.na(dat$RFV.2cut.wt))
+sum(is.na(dat$RFV.3cut.wt))
+# RFV NAs are identical to RFQ NAs, but to reduce liklihood of errors we'll reuse the same code but for RFV
+>>>>>>> 59e5fe208efa73ed653d84fa4aa6c5747f75e90a
 
 cbp <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 bernie_mittens = c("#372421","#50506D","#855F4C","#465952","#B7A79B")
