@@ -12,7 +12,7 @@ editor_options:
 
 # Overview
 
-This markdown file has everything you need for the forage timing "FIG" experiment. Data import, data analysis, figure generation, table generation and commentary along the way. 
+This markdown file has everything you need for the forage into grain "FIG" experiment. Data import, data analysis, figure generation, table generation and commentary along the way. 
 
 # Settings
 
@@ -25,12 +25,12 @@ if (!require("pacman"))
   install.packages("pacman")
 pacman::p_load(
   tidyverse,
-  lattice,
+  lattice,   #quick plots
   MASS,      #fitting distributions
-  agricolae,
+  agricolae, #standard anova
   nlme,      #when homogeneity of variance is violated
-  lme4,
-  car,
+  lme4,      #mixed effect model, preferred
+  car,       #Anova() comparison between mixed effect models
   lsmeans,   #least square means from mixed models
   emmeans,   #estimating marginal means from mixed models
   multcomp,  #compact letter display of pairwise mean comparisons
@@ -47,15 +47,16 @@ options(scipen = 999) #reduce scientific notation
 options(digits = 4)   # only print 4 sig figs
 # options(device = "windows")
 
+# sourcing my custom ggplot() theme
 source("ggplot_custom_theme.R")
 theme_set(theme_jpb())
 
 # scale_y_continuous(labels=round_decimals)
 round_decimals <- function(x) sprintf("%.0f", x)
 
+# Remember to switch chunk output from inline to in consolve for  figure generation
 
-# Remember to add chunk output in console for figure generation
-
+# color blind friendly color palette
 cbp <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 
 ```
@@ -69,8 +70,10 @@ source("fig_import-data.R")
 ## missing and problematic data
 
 *missing data*\
+
 The data for both follow-up cuts of at the R70 site in 2018 are missing
 from the dataset\
+
 The data from some plots where the spring harvest was at the grain stage
 is missing from the dataset
 
@@ -108,17 +111,8 @@ dat3 <- dat_wide %>%
 
 ## outliers
 
-Outlier identification was subjective, using boxplots to identify
-outliers within environments and then deciding whether the outlier value
-was reasonable.
+Box and whisker plots were used to identify outliers within environments.
 
-In general, for high value outliers, if the distance between outlier and
-the maximum was greater than the distance between the maximum and the
-upper quartile, it was considered an unreasonable outlier and subject to
-removal from the dataset. Similarly for low value outliers, if the
-distance between the outlier and the minimum was greater than the
-distance between the minimum and the lower quartile, it was considered
-an unreasonable outlier and subject to removal from the dataset
 
 ```{r eval=T}
 library(lattice)
@@ -159,6 +153,9 @@ for the first cut was
 aproximately 10x below the median yield for that treatment in that
 environment, which was
 `r median(subset(dat1, env=="R100.2019" & treatment=="DO")$yield.1cut)`.
+
+Outliers were removed prior to analysis.
+
 
 ```{r outlier-free datasets, include=FALSE, cache=TRUE}
 dat_wide %>%
@@ -219,13 +216,13 @@ colors_treatments <- c(boot.colors,
                        anthesis.colors,
                        dough.colors)
 
-levels(dat3$treatment)
+# levels(dat3$treatment)
 # we just won't assign colors to grain cuts since we're removing them from analysis
 
  
 # colors_treatments <-brewer.pal(name = "Set3", n=10)[c(1:8,10)]
 
-names(colors_treatments) <- levels(dat3$treatment)
+# names(colors_treatments) <- levels(dat3$treatment)[1:9]
 treatment_colors <- scale_colour_manual(name = "Harvest schedules", values = colors_treatments)
 treatment_fill <- scale_fill_manual(name = "Harvest schedules", values = colors_treatments)
 
@@ -251,64 +248,44 @@ dat3
 
 ```
 
-# Analysis progression
+# Experimental design
 
+**Treatments**
 Whole plot: Timing of first cut
 
-Split plot: intensity of harvest
+Split plot: amount of harvests per year
 
-We organize this analysis based on response variable
-
-*yield* : yield.total, yield.1cut, yield.2cut, yield.3cut.
+**Responses**
+*Yield* : yield.total, yield.1cut, yield.2cut, yield.3cut.
 
 *Quality* :RFQ.total, RFQ.1cut, RFQ.2cut, RFQ.3cut
 
 *Profitability* : return.total, return.1cut, return.2cut, return.3cut
 
-For all responses, we begin with a global model, as described by
-Anderson and Burnham (2002).
+**Statistical Analysis**
+All responses are predicted using a global model [see Anderson and Burnham (2002)].
 
-Our global model is a linear mixed effect model containing the following
-effects...
+The global model is a linear mixed effect model with the following effect structure...
 
 *Fixed effects*: timing, intensity, timing*intensity
 
 *Random effects*: block nested within site, timing, env
 
-Following analysis by our global model, we examined the distribution of
-the response and the variance explained by random effects. We then
-attempted to achieve a more parsimonious model by using generalized linear
-mixed effect models that more accurately describe the distribution of
-the response and we remove random effects that do not explain variance.
-We test the fit of the improved models using AIC criterion and
-log-liklihood tests. If all random effects are removed from a model, we
-also perform box-cox corrections.
 
-For the purposes of the publication and this rmarkdown file, we only report the global model outputs. See fig.analysis.rmd for an in-depth analysis, which ultimately finds the conclusions of the various models to be the same.
-
-*Naming conventions of objects: objects are named using the convention
-[response][effect][model number]. Response naming conventions
-are...yt=yield total, y1=yield first cut, q1=relative forage quality of
-first cut, r1=net returns of first cut. Effect naming conventions
-are...tr=treatment, t=timing.1cut, i=follow-up cut/intensity of harvest.
-For example, an object named y1.t.f.1 means the response variable is the
-yield of the first cut, the fixed effects are the timing of the first
-cut and the follow-up cut treatment, and this is the first model.*
-
-*Note: we use "follow-up cut" in the analysis, but we use "harvest
-intensity" in the manuscript. They are the same thing* *Note: we use
-"year 1" and "year 2" to refer to the years of data collection in the
-experiment, not the age of the kernza stand* *Note: we use the dat3
-dataset when we are looking at yearly totals of yield and quality
-because R70.2018 lacked september and october harvests*
 
 # Histograms
 
 Each combination of timing of first cutting and number of cutting is a unique harvest approach/system.
 
-Compare the harvest systems in different environments (fields and years)
+Each harvest systems exists within a unique  environment (fields and years)
+
+We expect that each data point within a timepoint (i.e. yield of the first cut of a 3-cut harvest system in R100 in 2019) to already be an average of the plot since samples were collected by finding a representative area within the plot and sampling the population. 
+
+Along with our raw data, we can generate seasoned data. It extends the raw data by adding columns like GDD accumulation or cumulative yield. 
 
 We can look at cumulative responses that are summarized across the year or we can look at responses at the cutting time. For the latter, we also want to facet_wrap by the cutting (xcut)
+
+
 
 
 ```{r histogram cumulative yield by treatment}
@@ -333,12 +310,13 @@ dat3 %>%
 ggplot(aes(x=yield.total, 
                  fill=treatment)) +
   stat_bin(bins = 30) +
-  treatment_fill +
+  treatment_colors +
+  scale_fill_manual(values = colors_treatments) +
   facet_wrap(~env,
              ncol = 1) +
   labs(x="Cumulative forage yield\n(Mg ha yr)") +
-  scale_x_continuous(labels = round_decimals)
-
+  scale_x_continuous(labels = function(x) sprintf("%.0f", x)
+) 
 
 
 
@@ -459,7 +437,8 @@ ggplot(aes(x=yield,
   stat_bin(bins = 30) +
   treatment_fill +
   facet_grid(xcut~env) +
-  scale_x_continuous(labels = round_decimals) +
+  scale_x_continuous(labels = function(x) sprintf("%.0f", x)
+) +
   labs(x="Forage yield\n(Mg ha)") 
 
 
@@ -509,7 +488,8 @@ ggplot(aes(x=yield,
   treatment_fill +
   facet_grid(env~xcut,
              scales = "free") +
-  scale_y_continuous(labels = round_decimals) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f", x)
+) +
    theme(panel.spacing = unit(.8, "lines"))
   labs(x="Forage yield\n(Mg ha)") 
 
@@ -944,7 +924,7 @@ summary(yt.t.i.1)$coefficients
 
 
 
-qqplot(yt.t.i.1)
+# qqplot(yt.t.i.1)
 plot(yt.t.i.1)
 
 yt.t.i.1 <- lmer(log(yield.total)~timing.1cut*follow.cut +
@@ -1516,7 +1496,7 @@ cld(emmeans(q.t.i.dough, ~factor(xcut)))
 
 ## 1cut
 
-```{r protein}
+```{r protein 1 cut}
 
 p1.t.i.1 <- lmer(protein.1cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1527,7 +1507,7 @@ cld(emmeans(y1.t.i.1, ~timing.1cut))
 
 ```
 
-```{r adf}
+```{r adf 1 cut}
 
 adf.t.i.1 <- lmer(ADF.1cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1538,7 +1518,7 @@ cld(emmeans(adf.t.i.1, ~timing.1cut))
 
 ```
 
-```{r ndf}
+```{r ndf 1cut}
 
 ndf.t.i.1 <- lmer(NDF.1cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1550,7 +1530,7 @@ cld(emmeans(ndf.t.i.1, ~timing.1cut))
 ```
 
 
-```{r ndfd48}
+```{r ndfd48 1cut}
 
 ndfd.t.i.1 <- lmer(NDFD48.1cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1562,7 +1542,7 @@ car::Anova(ndfd.t.i.1)[3]
 
 ## 2cut
 
-```{r protein}
+```{r protein 2cut}
 
 p2.t.i.1 <- lmer(protein.2cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1573,7 +1553,7 @@ cld(emmeans(y1.t.i.1, ~timing.1cut))
 
 ```
 
-```{r adf}
+```{r adf 2cut}
 
 adf2.t.i.1 <- lmer(ADF.2cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1584,7 +1564,7 @@ cld(emmeans(adf2.t.i.1, ~timing.1cut))
 
 ```
 
-```{r ndf}
+```{r ndf 2cut}
 
 ndf2.t.i.1 <- lmer(NDF.2cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1596,7 +1576,7 @@ cld(emmeans(ndf2.t.i.1, ~timing.1cut))
 ```
 
 
-```{r ndfd48}
+```{r ndfd48 2cut}
 
 ndfd2.t.i.1 <- lmer(NDFD48.2cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1608,7 +1588,7 @@ car::Anova(ndfd2.t.i.1)[3]
 
 ## 3cut
 
-```{r protein}
+```{r protein 3cut}
 
 p3.t.i.1 <- lmer(protein.3cut~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1618,7 +1598,7 @@ car::Anova(p3.t.i.1)[3]
 
 ```
 
-```{r adf}
+```{r adf 3cut}
 
 adf3.t.i.1 <- lmer(ADF.3cut~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1629,7 +1609,7 @@ cld(emmeans(adf3.t.i.1, ~timing.1cut))
 
 ```
 
-```{r ndf}
+```{r ndf 3cut}
 
 ndf3.t.i.1 <- lmer(NDF.1cut~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1641,7 +1621,7 @@ cld(emmeans(ndf3.t.i.1, ~timing.1cut))
 ```
 
 
-```{r ndfd48}
+```{r ndfd48 3cut}
 
 ndfd3.t.i.1 <- lmer(NDFD48.3cut~timing.1cut +
                    (1|site/block/timing.1cut) + (1|env),
@@ -1996,7 +1976,7 @@ b2 <- dat_long %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
 b3<-dat_long %>%
-  filter(timing.1cut=="boot" & xcut=="3") %>%a
+  filter(timing.1cut=="boot" & xcut=="3") %>%
   summarise(y=mean(na.omit(yield)),
             se=std.error(yield,na.rm = T))
 a1<-dat_long %>%
@@ -2212,15 +2192,16 @@ ggsave("fig2.png",width = 4.85,height = 9,units = "in",
 ## yield+quality+$~intensity, fig4 --------------------------------------------------
 
 ```{r}
+
 rt.i.gg <- dat3 %>%
   filter(!is.na(return.total)) %>%
-  mutate(follow.cut = recode(follow.cut,
-                             none = "1",
-                             september = "2",
-                             october = "3")) %>%
+  mutate(follow.cut = fct_recode(follow.cut,
+                                 `1` ="none",
+                                 `2` = "september",
+                                 `3` = "october")) %>%
   group_by(follow.cut) %>%
   summarise(mean=mean(return.total),n=n(),
-            se=sd(return.total)/sqrt(n)) %>%
+            se=sd(return.total)/sqrt(n)) %>% 
   ggplot(aes(follow.cut,mean))+
   geom_errorbar(aes(ymin=mean-se,
                     ymax=mean+se),
@@ -2240,6 +2221,8 @@ rt.i.gg <- dat3 %>%
         axis.title = element_text(size = 12),
         axis.text = element_text(size=10),
         legend.text = element_text(size=10))
+
+
 
 y.i.gg <-dat3 %>%
   dplyr::filter(id!=164) %>%
@@ -2401,10 +2384,6 @@ ggsave("rfv.timing.png", width = 3.27,height=3,
 
 mean(dat3$yield.3cut/dat3$yield.total)
 mean(na.omit(dat3$yield.3cut/dat3$yield.total))
-
-dat3 %>%
-  
-  
   
 ```
 
@@ -2651,7 +2630,7 @@ car::Anova(lmer(RFQ.1cut~timing.1cut*follow.cut +
                    (1|site/block/timing.1cut) + (1|env),
                  subset(dat1, field.year=="second")))
 
-cld(emmeans(abst, ~follow.cut))
+# cld(emmeans(abst, ~follow.cut))
 
 ```
 
@@ -2992,13 +2971,13 @@ dat2$yield.2cut <- dat3$yield.1cut+dat3$yield.2cut
 dat2$yield.3cut <- dat3$yield.1cut+dat3$yield.2cut+dat3$yield.3cut
 dat2.long <- reshape2::melt(data = dat2, id.vars = c("follow.cut"), measure.vars = c("yield.3cut", "yield.2cut","yield.1cut"))
 
-dat2.long <- dat2.long %>%
-  mutate(variable = recode(variable,
-             yield.3cut = "October cut",
-             yield.2cut = "September cut",
-             yield.1cut = "Spring cut")) %>%
-  mutate(follow.cut = recode(follow.cut,
-             october = "september\n    +        \noctober  "))
+dat2.long <-  dat2.long %>%
+  mutate(variable = fct_recode(variable,
+             "October cut" = "yield.3cut",
+             "September cut" = "yield.2cut",
+             "Spring cut" = "yield.1cut")) %>%
+  mutate(follow.cut = fct_recode(follow.cut,
+             "september\n    +        \noctober  " = "october")) 
 
 
 ggplot(data=dat2.long,
@@ -3040,7 +3019,7 @@ If all the forage from a plot over the course of a growing season was
 mixed together before selling, what would be its RFQ and to what extent
 did each harvest contribute to that RFQ?
 
-```{r}
+```{r, eval=FALSE}
 dat5 <- dat3
 dat5$RFQ.1cut.wt <- dat3$RFQ.1cut.wt
 dat5$RFQ.2cut.wt <- dat3$RFQ.1cut.wt+dat3$RFQ.2cut.wt
@@ -3091,7 +3070,7 @@ Now while we expect the differences in RFQ to be small between follow-up
 cuts based on the previous preportion graph, how big were these
 differences?
 
-```{r}
+```{r, eval=F}
 
 dat1.long <- reshape2::melt(data = dat3, id.vars = c("follow.cut"), measure.vars = c("RFQ.3cut", "RFQ.2cut","RFQ.1cut"))
 
@@ -3218,7 +3197,7 @@ ggplot(dat4.long.tidy, aes(x=variable, y=mean)) +
 # Tale of 3-cut < 2-cut in cumulative yields
 At Craig's request
 
-```{r}
+```{r, eval=F}
 
 dat3 %>%
   mutate(yield.total=yield.total/1000) %>%
@@ -3230,10 +3209,10 @@ dat1 %>%
   ggplot(aes(follow.cut,yield.total)) +
   stat_summary(geom = "pointrange")
 
-dat %>%
-  mutate(yield.total=yield.total/1000) %>%
-  ggplot(aes(follow.cut,yield.total)) +
-  stat_summary(geom = "pointrange")
+# dat %>%
+#   mutate(yield.total=yield.total/1000) %>%
+#   ggplot(aes(follow.cut,yield.total)) +
+#   stat_summary(geom = "pointrange")
 
 dat3 %>%
   dplyr::filter(id!=164) %>%
@@ -3251,12 +3230,12 @@ dat3 %>%
                    se=sd(yield.total)/sqrt(n))
 #occurs both for boot and dough
 
-dat3 %>%
-  dplyr::filter(id!=164) %>%
-  mutate(yield.total.old=yield.total.old/1000) %>%
-  group_by(timing.1cut,follow.cut) %>%
-  dplyr::summarise(mean=mean(yield.total.old),n=n(),
-                   se=sd(yield.total.old)/sqrt(n))
+# dat3 %>%
+#   dplyr::filter(id!=164) %>%
+#   mutate(yield.total.old=yield.total.old/1000) %>%
+#   group_by(timing.1cut,follow.cut) %>%
+#   dplyr::summarise(mean=mean(yield.total.old),n=n(),
+#                    se=sd(yield.total.old)/sqrt(n))
 #means are identical both for yield.total.old and yield.total
 
 
@@ -3271,11 +3250,10 @@ dat3 %>%
 
 
 
-dat3 %>%
-  dplyr::filter(timing.1cut=="boot") %>%
-  dplyr::select(id,env,treatment,yield.1cut,yield.2cut,
-                yield.3cut,yield.total.old,yield.total) %>%
-  View()
+# dat3 %>%
+#   dplyr::filter(timing.1cut=="boot") %>%
+#   dplyr::select(id,env,treatment,yield.1cut,yield.2cut,
+#                 yield.3cut,yield.total.old,yield.total) 
 #ID 164 fails to drag down sep
 
 dat3 %>%
