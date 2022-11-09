@@ -1,0 +1,490 @@
+---
+title: "FIG Analysis Update"
+author: "Jesse Puka-Beals"
+date: '`r format(Sys.Date(), "%m %d %Y")`'
+output: 
+  ioslides_presentation:
+    incremental: true
+    logo: logo.png
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, nlme, lsmeans, lme4, multcomp, multcompView,
+               googlesheets4, googledrive, lubridate, reshape2)
+```
+
+```{r import, include=FALSE, cache=TRUE}
+
+# #Copy the url of googlesheet and name that url as an object in R
+driveurl<-"https://docs.google.com/spreadsheets/d/16qh8tlNDfsdnwmDvass7WY5EFLY_U0AzQZVDhPQMhjQ/edit#gid=0"
+# 
+# #read_sheet() is the function that reads in the data. 
+dat<-read_sheet(driveurl,
+                gs4_deauth())
+
+```
+
+```{r tidy, include=FALSE, cache=TRUE}
+
+dat<-dat%>%
+  mutate_if(is.character,as.factor) %>%
+  mutate_at("year", as.factor) %>%
+  mutate_at("age", as.integer) %>%
+  mutate_at("block", as.factor) %>%
+  mutate_at("plot", as.factor) %>%
+  mutate_at("trt.code", as.factor)
+
+dat$timing.1cut <- factor(dat$timing.1cut, levels = c("boot", "anthesis", "dough", "grain"))
+dat$follow.cut <- factor(dat$follow.cut, levels = c("none", "september", "october"))
+dat$site <- factor(dat$site, levels = c("I2", "R70", "R100"))
+dat$treatment <- factor(dat$treatment, levels = c("BN", "BS", "BO","AN", "AS", "AO","DN", "DS", "DO","GN", "GS", "GO"))
+
+#for total yield comparisons
+dat$yield.total <- rowSums(dat[,c("yield.1cut","yield.2cut","yield.3cut")], na.rm=T)
+
+#for forage quality comparisons 
+#First cut
+DM<-dat$dry.matter.1cut
+CP<-dat$protein.1cut
+NDF<-dat$NDF.1cut
+NDFD<-dat$NDFD48.1cut
+ADF<-dat$ADF.1cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.1cut<-DMI*TDN/1.23
+dat$RFV.1cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#Second cut
+DM<-dat$dry.matter.2cut
+CP<-dat$protein.2cut
+NDF<-dat$NDF.2cut
+NDFD<-dat$NDFD48.2cut
+ADF<-dat$ADF.2cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.2cut<-DMI*TDN/1.23
+dat$RFV.2cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#Third cut
+DM<-dat$dry.matter.3cut
+CP<-dat$protein.3cut
+NDF<-dat$NDF.3cut
+NDFD<-dat$NDFD48.3cut
+ADF<-dat$ADF.3cut
+
+EE<-2.05
+FA<-EE-1
+Ash<-100-DM
+NFC<-100-((0.93*NDF)+CP+EE+Ash)
+NDFn<-NDF*0.93
+NDFDp<-22.7+0.664*NDFD
+TDN<-(NFC*.98)+(CP*.87)+(FA*.97*2.25)+(NDFn*NDFDp/100)-10
+DMI<-(-2.318)+(.442*CP)-(.01*CP^2)-(.0638*TDN)+(.000922*TDN^2)+(.18*ADF)-(0.00196*ADF^2)-(0.00529*CP*ADF)
+
+dat$RFQ.3cut<-DMI*TDN/1.23
+dat$RFV.3cut<-DMI*((89.8-(0.779*ADF)))/1.29
+
+#weighting the RFQ and RFV by their proportion of the final total forage for a plot
+dat$RFQ.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFQ.1cut 
+dat$RFQ.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFQ.2cut 
+dat$RFQ.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFQ.3cut 
+dat$RFQ.total <- rowSums(dat[,c("RFQ.1cut.wt","RFQ.2cut.wt","RFQ.3cut.wt")], na.rm=T)
+
+dat$RFV.1cut.wt <- dat$yield.1cut/dat$yield.total*dat$RFV.1cut 
+dat$RFV.2cut.wt <- dat$yield.2cut/dat$yield.total*dat$RFV.2cut 
+dat$RFV.3cut.wt <- dat$yield.3cut/dat$yield.total*dat$RFV.3cut
+dat$RFV.total <- rowSums(dat[,c("RFV.1cut.wt","RFV.2cut.wt","RFV.3cut.wt")], na.rm=T)
+
+rm(DM,CP,NDF,NDFD,ADF,EE,FA,Ash,NFC,NDFn,NDFDp,TDN,DMI)
+```
+
+```{r QAQC, include=FALSE, cache=TRUE}
+dat1 <- dat %>%
+  filter(timing.1cut!="grain" & site!="I2")
+
+dat1 <- dat1 %>%
+  filter(id != 107)
+
+options(scipen=999)
+```
+
+```{r weather data import, include=FALSE, warning=FALSE, cache=TRUE}
+weatherurl<-"https://docs.google.com/spreadsheets/d/1I-kHBXThb0VSwOgRF6ZwiyOtC9-BwCtsKVl7_Z7-XXs/edit#gid=0"
+
+weather<-read_sheet(weatherurl)
+
+weather1 <- weather %>%
+  mutate_at("year", as.factor) %>%
+  mutate(year = recode_factor(year,
+                      `30` = "30 year average"))
+
+```
+
+## Narrative
+
+* year 1: Plant IWG in fall
+
+* year 2: IWG establishes, is harveseted once for grain
+
+* year 3 + 4: IWG is treated as a forage
+
+* *how should we manage the IWG in years 3 and 4?*
+
+* *when should we harvest?*
+
+* *how many times should we harvest?*
+
+## Design
+
+ Site   Planted   Data collected      
+------ --------- ----------------  
+ I2     2011      2017
+ R70    2015      2017-2018
+ R100   2016      2018-2019
+
+* all sites in Rosemount MN
+
+## Data collection
+
+* response variables
+  + yield
+  + quality
+    - **$**
+* treatments
+  + timing.1cut
+    - boot, dough, anthesis, *grain*
+  + follow.cut
+    - none, sept, sept+oct
+* sample times
+  + 1.cut, 2.cut, 3.cut, 
+    - **.total**
+
+## Site conditions 1
+
+```{r}
+ggplot(subset(weather, year!="30"), 
+                   aes(x = as.Date(yday(date), "2017-01-01"), 
+                     y = cum.precip, 
+                     color = factor(year(date)))) +
+  geom_path() +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative precipitation \n(mm)") +
+  theme_bw()
+
+```
+
+## Site conditions 2
+
+```{r}
+
+ggplot(subset(weather, year!="30"), 
+                aes(x = as.Date(yday(date), "1970-01-01"), 
+                     y = `Cumulative GDD`, 
+                     color = factor(year(date)))) +
+  geom_line() +
+  scale_x_date(date_breaks="months", date_labels="%b") +
+  labs(x="",
+       colour="",
+       y="Cumulative Growing\nDegree Days") +
+  theme_bw()
+
+
+```
+
+## Diagnostics
+
+* missing data
+  - grain cuts
+  - follow-up cuts @ R70.2018 & I2.2017
+* problematic data
+  - one outlier value at R100.2019 for dough cut
+  - I2 
+  
+```{r, fig.height=2.5,fig.width=5, fig.align="center"}
+lattice::bwplot(yield.1cut~timing.1cut|env,subset(dat,env=="R100.2019" & timing.1cut!="grain"))
+```
+
+
+## I2 removal justification
+
+```{r}
+ggplot(subset(dat, timing.1cut!="grain"),
+              aes(y=yield.1cut, x=gdd.1cut, color=timing.1cut))+
+  facet_grid(~env)+
+  geom_point()+
+  geom_smooth(method="lm", se=F, show.legend=F, color="black")+
+  labs(caption = "n=36 for all environments")
+```
+
+## Analysis 1 {.smaller}
+
+**null hypothesis testing**
+
+* repeated measures
+  - each plot is measured 1-3 times per year depending on assigned follow.cut treatment
+  - each plot is measured over 2 consecutive years
+* random effects
+  - environment
+  - site:block
+* fixed effects
+  - follow.cut
+  - timing.1cut
+
+## Analysis 2 {.smaller}
+
+**regression**
+
+* responses vs.
+  - GDD accumulation
+  - *precipitation accumulation?*
+  - *hydrothermal time?*
+  
+## Model fitting 1
+
+* Box plot response by environment
+    * identify if there's a consistent trend
+        * interaction drivers?
+    * estimate distribution and variance
+* Distribution
+    * normal
+        - lmer
+    * gamma (poisson)
+        - glmer
+        
+## Model fitting 2
+
+* Fit all effects into model
+    i) remove random effects not reducing residual variance
+    i) compare multiple models
+        * log liklihood
+        * AIC
+    i) null hypothesis test @ alpha=0.05
+    i) post-hoc mean comparison
+        * tukey, z-statistic
+
+
+## yield of first cut in second year of data collection
+
+```{r, echo=TRUE}
+car::Anova(lmer(yield.1cut~follow.cut*timing.1cut+
+                  (1|site:block)+
+                  (1|env),
+           data=subset(dat1, field.year=="second")))
+```
+## quality of first cut in second year of data collection 
+
+```{r, echo=TRUE}
+car::Anova(lmer(RFQ.1cut~follow.cut*timing.1cut+
+                  (1|site:block)+
+                  (1|env),
+           data=subset(dat1, field.year=="second")))
+```
+
+
+## quality of second cut in second year 
+
+```{r, echo=TRUE}
+car::Anova(lmer(RFQ.2cut~follow.cut*timing.1cut+
+                  (1|block),
+           data=subset(dat1, env=="R100.2019" & follow.cut!="none")))
+```
+
+## quality of second cut in both years {.smaller}
+
+```{r, echo=TRUE}
+car::Anova(lmer(RFQ.2cut~year*follow.cut+
+                  (1|block),
+           data=subset(dat1, site=="R100" & follow.cut!="none")))
+```
+-compare between years at same site since no obvious carryover effect
+-conclude that no difference in quality in second cut between the first and second year at R100.
+
+## the effect of multiple cuttings
+
+
+  dataset                     yield.1cut    rfq.1cut    .2cut     .3cut
+----------------------       ------------  ----------  --------  --------
+ R70.2018+R100.2019                ns        ns        
+ R100.2019                                               ns
+ 
+Table:  Second year datasets do not find differences among follow.cut treatment levels due to the follow.cut treatments applied in the first year.
+
+
+- no carryover effect from years observed
+
+## follow.cut contribution to yield
+
+```{r}
+
+dat2 <- dat1
+dat2$yield.1cut <- dat1$yield.1cut
+dat2$yield.2cut <- dat1$yield.1cut+dat1$yield.2cut
+dat2$yield.3cut <- dat1$yield.1cut+dat1$yield.2cut+dat1$yield.3cut
+dat2.long <- reshape2::melt(data = dat2, id.vars = c("follow.cut"), measure.vars = c("yield.3cut", "yield.2cut","yield.1cut"))
+
+dat2.long <- dat2.long %>%
+  mutate(variable = recode(variable,
+             yield.3cut = "October cut",
+             yield.2cut = "September cut",
+             yield.1cut = "Spring cut")) %>%
+  mutate(follow.cut = recode(follow.cut,
+             october = "september\n+\noctober"))
+
+
+ggplot(data=dat2.long,
+       aes(x=follow.cut, 
+           y=value, 
+           fill=variable, color=variable)) +
+      geom_bar(stat="summary",
+               fun="mean",
+               position ="identity") +
+  labs(y="Cumulative Mean Total Forage Yield \n(kg ha-1 yr-1)",
+       x="Follow-Up Cuts",
+       fill="",
+       color="")
+
+```
+
+-NS differences
+
+## follow.cut contribution to RFQ
+
+```{r}
+
+dat2 <- dat1
+dat2$RFQ.1cut <- dat1$RFQ.1cut.wt
+dat2$RFQ.2cut <- dat1$RFQ.2cut.wt
+dat2$RFQ.3cut <- dat1$RFQ.3cut.wt
+dat2.long <- reshape2::melt(data = dat2, id.vars = c("follow.cut"), measure.vars = c("RFQ.3cut", "RFQ.2cut","RFQ.1cut"))
+
+dat2.long <- dat2.long %>%
+  mutate(variable = recode(variable,
+             RFQ.3cut = "October cut",
+             RFQ.2cut = "September cut",
+             RFQ.1cut = "Spring cut")) %>%
+  mutate(follow.cut = recode(follow.cut,
+             october = "september\n+\noctober"))
+
+
+ggplot(data=dat2.long,
+       aes(x=follow.cut, 
+           y=value, 
+           fill=variable, color=variable)) +
+      geom_bar(stat="summary",
+               fun="mean",
+               position ="stack") +
+  labs(y="Average Relative Forage Quality",
+       x="Follow-Up Cuts",
+       fill="",
+       color="")
+```
+
+-NS differences
+
+## yield.1cut vs. timing.1cut
+
+```{r}
+yield.1cut.tidy <- dat1 %>%
+  group_by(timing.1cut) %>%
+  summarise(n=n(), mean=mean(yield.1cut), 
+            se=sd(yield.1cut)/sqrt(n)) %>%
+  as.data.frame() %>%
+  mutate(tukey = c("b","a", "a"))
+
+ggplot(yield.1cut.tidy, aes(x=timing.1cut, y=mean)) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), 
+                width=0.3,
+                alpha=1,
+                size=1) +
+  geom_bar(stat = "identity", width=0.7) +
+  geom_text(aes(label=tukey),
+            vjust=-1.3,
+            size=8) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 5000)) + #adjust for y-axis range 
+  theme_classic() +
+  labs(y="Forage Yield of the first cut of the Year \n(kg ha-1)",
+       x="",
+       title="Combined field years")
+
+```
+
+## yield.total vs. timing.1cut
+
+```{r}
+dat3 <- subset(dat1,env=="R70.2017" | env=="R100.2018" | env=="R100.2019")
+
+yield.total.tidy <- dat3 %>%
+  group_by(treatment) %>%
+  summarise(n=n(), mean=mean(yield.total), 
+            se=sd(yield.total)/sqrt(n)) %>%
+  as.data.frame() %>%
+  mutate(tukey = c("b","ab", "ab", "ab", "a", "a", "ab", "ab", "ab"))
+
+
+ggplot(yield.total.tidy, aes(x=treatment, y=mean)) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), 
+                width=0.3,
+                alpha=1,
+                size=1) +
+  geom_bar(stat = "identity", width=0.7) +
+  geom_text(aes(label=tukey),
+            vjust=-1.5,
+            size=8) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 10000)) + #adjust for y-axis range 
+  theme_classic() +
+  labs(y="Forage Yield (kg ha-1)",
+       x="",
+       title="Combined across three environments")
+```
+
+## rfq.1cut vs timing.1cut
+
+```{r}
+RFQ.1cut.tidy <- dat1 %>%
+  group_by(timing.1cut) %>%
+  summarise(n=n(), mean=mean(RFQ.1cut), 
+            se=sd(RFQ.1cut)/sqrt(n)) %>%
+  as.data.frame() %>%
+  mutate(tukey = c("a","b", "c"))
+
+ggplot(RFQ.1cut.tidy, aes(x=timing.1cut, y=mean)) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), 
+                width=0.3,
+                alpha=1,
+                size=1) +
+  geom_bar(stat = "identity", width=0.7) +
+  geom_text(aes(label=tukey),
+            vjust=-1.2,
+            size=8) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 200)) + #adjust for y-axis range 
+  theme_classic() +
+  labs(y="Forage Yield (kg ha-1)",
+       x="",
+       title="")
+
+```
